@@ -1,0 +1,1 @@
+"""SYSU NetAuth application package."""

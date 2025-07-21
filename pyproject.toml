@@ -1,0 +1,57 @@
+[tool.vulture]
+# 排除虚拟环境、构建产物、第三方代码
+exclude = [
+    ".venv/",
+    "venv/",
+    "build/",
+    "dist/",
+    "private/",
+    "analysis/",
+    "*.egg-info/",
+    "__pycache__/",
+    "scripts/Languages/",
+]
+# 需要忽略的误报白名单（函数/变量名）
+# 格式：path_or_glob:names
+ignore_names = [
+    # Qt 信号 / 槽 — 通过信号机制间接调用
+    "*.py:reauth_needed",
+    "*.py:progress",
+    "*.py:finished_auth",
+    "*.py:close_action",
+    # 入口点 — 被 PyInstaller / 模板引用
+    "run.py:main",
+    "run_service.py:main",
+    "scripts/*.py:main",
+    "sysu_netauth/cli.py:main",
+    "sysu_netauth/runner.py:main",
+    "sysu_netauth/service/__main__.py:main",
+    "sysu_netauth/app/tray.py:main",
+    "sysu_netauth/service/win_service.py:SYSUNetAuthService",
+    # pywin32 服务框架 — 通过 SCM 反射调用
+    "sysu_netauth/service/win_service.py:SvcStop",
+    "sysu_netauth/service/win_service.py:SvcDoRun",
+    # 枚举成员 — 通过 .value 间接引用
+    "sysu_netauth/core/eapol.py:NO_NPCAP",
+    "sysu_netauth/core/eapol.py:WAIT_EAP_SERVER",
+    "sysu_netauth/core/eapol.py:AUTHENTICATING",
+    "sysu_netauth/core/eapol.py:AUTH_SUCCESS",
+    "sysu_netauth/core/eapol.py:AUTH_FAILED",
+    "sysu_netauth/core/eapol.py:TIMEOUT",
+    "sysu_netauth/core/interfaces.py:ETHERNET",
+    "sysu_netauth/core/interfaces.py:WIRELESS",
+    "sysu_netauth/core/interfaces.py:VIRTUAL",
+    "sysu_netauth/core/interfaces.py:LOOPBACK",
+    "sysu_netauth/core/interfaces.py:UNKNOWN",
+    # Qt 元类型 — PySide6 内部注册
+    "*.py:NpcapDownloadWorker",
+    # 配置 dataclass — 字段通过 asdict() / JSON 间接引用
+    "sysu_netauth/core/shared_store.py:updated_at",
+    "sysu_netauth/core/config.py:AppConfig",
+    # pywin32 COM 属性 — 通过 WScript.Shell COM 对象动态分发
+    "TargetPath",
+    "Arguments",
+    "WorkingDirectory",
+    "IconLocation",
+    "Description",
+]

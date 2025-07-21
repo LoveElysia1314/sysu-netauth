@@ -1,0 +1,39 @@
+"""
+Asset path resolution for both frozen (PyInstaller) and development modes.
+
+Provides a single source of truth for icon and resource file locations,
+used by both runner.py and app/tray.py.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+
+def _project_root() -> Path:
+    """Return the project root (development mode only)."""
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def resolve_asset_path(name: str, ext: str = "ico") -> Path:
+    """Resolve the absolute path of an asset file.
+
+    Supports both PyInstaller frozen builds and development mode.
+    Returns the first existing file found, or a best-guess path
+    if no candidate exists (the caller should handle missing files).
+    """
+    filename = f"{name}.{ext}"
+    if getattr(sys, "frozen", False):
+        meipass = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates = [
+            meipass / "sysu_netauth" / "assets" / filename,
+            exe_dir / "sysu_netauth" / "assets" / filename,
+            meipass.parent / "sysu_netauth" / "assets" / filename,
+        ]
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        return candidates[0]
+    return _project_root() / "sysu_netauth" / "assets" / filename
