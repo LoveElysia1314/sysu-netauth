@@ -22,14 +22,13 @@ from sysu_netauth.core.config import (
     set_gui_launch_on_login,
 )
 from sysu_netauth.core.interfaces import (
-    get_interface_network_info,
     list_auth_candidate_interfaces,
     pick_best_candidate,
 )
 from sysu_netauth.core.assets import resolve_asset_path
 from sysu_netauth.core.npcap import has_npcap
-from sysu_netauth.core.shared_store import (
-    ensure_shared_config,
+from sysu_netauth.core.config import (
+    load_config,
     read_status,
     write_command,
 )
@@ -65,8 +64,6 @@ def _stop_service() -> None:
     _service_sc(f'stop "{APP_ID}"')
 
 
-_NETINFO_CACHE: list = [0.0, None, None]
-NETINFO_CACHE_TTL = 30.0
 STATUS_POLL_INTERVAL_MS = 2000
 INFO_REFRESH_INTERVAL_MS = 30000
 SERVICE_STALE_SECONDS = 15.0
@@ -103,7 +100,7 @@ class CampusTray:
     def __init__(self, app: QApplication, started_by_startup: bool = False) -> None:
         self.app = app
         self.started_by_startup = started_by_startup
-        self.config = ensure_shared_config()
+        self.config = load_config()
         self.status_window = MainWindow()
         self._last_service_state: str | None = None
         self._last_notify_at: dict[str, float] = {}
@@ -305,16 +302,24 @@ class CampusTray:
         message = status.message or status.state
         self.set_state(icon_key, message)
         if status.iface or status.ipv4 or status.mac:
-            # 仅更新 status.json 携带的字段，驱动程序/网关/DNS 留给 _refresh_info_panel
             self.status_window.network_panel.set_value("网卡", status.iface or "-")
             self.status_window.network_panel.set_value("IPv4", status.ipv4 or "-")
             self.status_window.network_panel.set_value("MAC", status.mac or "-")
+        if status.gateway or status.dns:
+            self.status_window.network_panel.set_value("网关", status.gateway or "-")
+            self.status_window.network_panel.set_value("DNS", status.dns or "-")
         if status.state != self._last_service_state:
             self._last_service_state = status.state
             if self.config.desktop_notify:
                 self._notify_state(status.state, message)
 
     def _refresh_info_panel(self) -> None:
+        """Refresh the info panel with local adapter info (MAC/IP) and cached service status (gateway/DNS).
+
+        服务端在每次认证成功后刷新完整的网络信息（含网关/DNS）到 status.json，
+        GUI 通过 2s 轮询读取，无需再独立调用 PowerShell。
+        MAC/IP/IPv6 来自 psutil（本地即时数据）。
+        """
         candidates = list_auth_candidate_interfaces()
         supported = {candidate.name: candidate for candidate in candidates}
         iface = self.config.iface if self.config.iface in supported else ""
@@ -340,8 +345,6 @@ class CampusTray:
         mac = "-"
         ip = "-"
         ipv6 = "-"
-        gateway = "-"
-        dns = "-"
         for addr in addrs.get(iface, []):
             if getattr(addr, "family", None) == psutil.AF_LINK and addr.address:
                 mac = addr.address
@@ -352,25 +355,10 @@ class CampusTray:
                 if not ipv6_addr.startswith("fe80:") or ipv6 == "-":
                     ipv6 = ipv6_addr
 
-        cached_at, cached_iface, cached_info = _NETINFO_CACHE
-        if (
-            time.monotonic() - cached_at < NETINFO_CACHE_TTL
-            and cached_iface == iface
-            and cached_info is not None
-        ):
-            network_info = cached_info
-        else:
-            network_info = get_interface_network_info(iface)
-            _NETINFO_CACHE[:] = [time.monotonic(), iface, network_info]
-        if network_info.ipv4:
-            ip = network_info.ipv4
-        if network_info.gateway:
-            gateway = network_info.gateway
-        if network_info.dns:
-            dns_values = list(network_info.dns[:2])
-            dns = ", ".join(dns_values)
-            if len(network_info.dns) > len(dns_values):
-                dns += " ..."
+        # 从 status.json 读取服务端缓存的网关/DNS（由 _poll_service_status 每 2s 更新）
+        status = read_status()
+        gateway = status.gateway or "-"
+        dns = status.dns or "-"
 
         candidate = supported.get(iface)
         self.status_window.update_info(
@@ -468,7 +456,6 @@ class CampusTray:
 
 def main(
     app: QApplication | None = None,
-    single_instance: object | None = None,
     started_by_startup: bool = False,
 ) -> None:
     try:
@@ -485,10 +472,6 @@ def main(
         app.setWindowIcon(make_window_icon())
 
     tray = CampusTray(app, started_by_startup=started_by_startup)
-
-    # Wire up single-instance IPC: second instance → restore this window
-    if single_instance is not None:
-        single_instance.activate_requested.connect(tray.show_status)
 
     if not QSystemTrayIcon.isSystemTrayAvailable():
         QMessageBox.warning(None, APP_DISPLAY_NAME, "系统托盘不可用")

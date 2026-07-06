@@ -28,4 +28,9 @@ ignore_names = [
     "WorkingDirectory",
     "IconLocation",
     "Description",
+    # ctypes 结构体 _fields_ — 由 ctypes 元类内部使用，非 Python 属性访问
+    "_fields_",
+    # ctypes 结构体 Length — 通过 ptr.contents.Length 写入，
+    # GetAdaptersAddresses 要求调用方设置此字段
+    "Length",
 ]

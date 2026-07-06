@@ -4,62 +4,71 @@ import json
 import os
 import time
 from dataclasses import asdict, dataclass, fields
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 APP_DISPLAY_NAME = "SYSU NetAuth"
 APP_ID = "SYSUNetAuth"
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.6.1"
 
 PROGRAMDATA_ROOT = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
 APP_DIR = PROGRAMDATA_ROOT / APP_ID
 CONFIG_PATH = APP_DIR / "config.json"
+STATUS_PATH = APP_DIR / "status.json"
+COMMAND_PATH = APP_DIR / "command.json"
 
 
 @dataclass
 class AppConfig:
-    # ── NetID ──
     username: str = ""
     password: str = ""
     iface: str = ""
-    iface_mode: str = "auto"  # "auto" | "manual"
-
-    # ── 认证 ──
+    iface_mode: str = "auto"
     auto_auth: bool = True
-    retry_interval: int = 60  # 秒
-
-    # ── 行为 ──
-    service_mode: bool = True  # 以服务模式自动认证（独立于 GUI）
+    retry_interval: int = 60
+    service_mode: bool = True
     launch_gui_on_login: bool = False
     hide_window_on_login: bool = True
     desktop_notify: bool = True
-
-    # ── 缓存 ──
     last_success_mac: str = ""
 
 
-CONFIG_RANGES = {
-    "retry_interval": (15, 3600),
-}
+@dataclass(frozen=True)
+class ServiceStatus:
+    state: str = "idle"
+    message: str = ""
+    iface: str = ""
+    mac: str = ""
+    ipv4: str = ""
+    gateway: str = ""
+    dns: str = ""
+    updated_at: float = 0.0
+    authenticated_at: str | None = None
 
-# 哨兵值，用于区分"键不存在"和"值为 None"
-_sentinel = object()
 
-
-def _coerce_field(name: str, raw_value: object, default: object) -> object:
-    """将原始值强制转换为字段的目标类型，失败时返回 default。"""
-    target_type = type(default)
-    # None / 空字符串对 str 字段视为"未设置"，保留原始值（可能是 ""）
-    if target_type is str:
-        return raw_value if isinstance(raw_value, str) else default
-    if target_type is bool:
-        return raw_value if type(raw_value) is bool else default
-    if target_type is int:
-        return raw_value if type(raw_value) is int else default
-    return raw_value
+def _coerce_config(data: dict) -> AppConfig:
+    """从 JSON dict 构建 AppConfig，过滤未知字段，缺失/非法值回退默认值。"""
+    defaults = AppConfig()
+    merged: dict[str, object] = {}
+    for f in fields(AppConfig):
+        raw = data.get(f.name)
+        target = type(getattr(defaults, f.name))
+        if target is str:
+            merged[f.name] = raw if isinstance(raw, str) else getattr(defaults, f.name)
+        elif target is bool:
+            merged[f.name] = raw if type(raw) is bool else getattr(defaults, f.name)
+        elif target is int:
+            merged[f.name] = raw if type(raw) is int else getattr(defaults, f.name)
+    if merged.get("iface_mode") not in ("auto", "manual"):
+        merged["iface_mode"] = defaults.iface_mode
+    ri = merged.get("retry_interval", defaults.retry_interval)
+    if not isinstance(ri, int) or not 15 <= ri <= 3600:
+        merged["retry_interval"] = defaults.retry_interval
+    return AppConfig(**merged)  # type: ignore[arg-type]
 
 
 def _backup_invalid_config(path: Path) -> None:
-    """将损坏的配置文件重命名为 .invalid- 后缀备份。"""
     if not path.exists():
         return
     try:
@@ -71,44 +80,7 @@ def _backup_invalid_config(path: Path) -> None:
         pass
 
 
-def normalize_config_data(data: dict) -> AppConfig:
-    """从原始 JSON dict 中过滤出已知字段，类型强制后返回干净的 AppConfig。
-
-    自动丢弃未知字段（如旧版遗留的 last_success_iface），
-    缺失字段用 dataclass 默认值填充，非法类型退回到默认值。
-    """
-    if not isinstance(data, dict):
-        return AppConfig()
-
-    allowed = {field.name for field in fields(AppConfig)}
-    defaults = AppConfig()
-
-    # 构建合并字典：已知字段 + 类型强制
-    merged: dict[str, object] = {}
-    for field in fields(AppConfig):
-        raw = data.get(field.name, _sentinel)
-        if raw is _sentinel:
-            merged[field.name] = getattr(defaults, field.name)
-            continue
-        if field.name not in allowed:
-            continue
-        merged[field.name] = _coerce_field(
-            field.name, raw, getattr(defaults, field.name)
-        )
-
-    # 特殊后处理
-    if merged.get("iface_mode") not in ("auto", "manual"):
-        merged["iface_mode"] = defaults.iface_mode
-    retry = merged.get("retry_interval", defaults.retry_interval)
-    low, high = CONFIG_RANGES["retry_interval"]
-    if not isinstance(retry, int) or not low <= retry <= high:
-        merged["retry_interval"] = defaults.retry_interval
-
-    return AppConfig(**merged)  # type: ignore[arg-type]
-
-
 def load_config(path: Path = CONFIG_PATH) -> AppConfig:
-    """加载配置文件，自动清理未知字段并持久化回写。"""
     if not path.exists():
         return AppConfig()
     try:
@@ -116,8 +88,9 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
     except json.JSONDecodeError:
         _backup_invalid_config(path)
         return AppConfig()
-    config = normalize_config_data(raw)
-    # 自动回写规范格式：丢弃未知字段、补充缺失字段、统一缩进
+    if not isinstance(raw, dict):
+        return AppConfig()
+    config = _coerce_config(raw)
     save_config(config, path)
     return config
 
@@ -125,16 +98,123 @@ def load_config(path: Path = CONFIG_PATH) -> AppConfig:
 def save_config(config: AppConfig, path: Path = CONFIG_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = asdict(config)
-    # 密码明文保存，便于排查认证问题。
-    # 清理空值，保持配置文件简洁
-    for key in ("last_success_mac",):
-        if not data.get(key):
-            data.pop(key, None)
+    if not data.get("last_success_mac"):
+        data.pop("last_success_mac", None)
     tmp_path = path.with_name(f"{path.name}.tmp")
     tmp_path.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     tmp_path.replace(path)
+
+
+# ── Status / Command store ───────────────────────────────────────────────────
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def read_status() -> ServiceStatus:
+    data = _read_json(STATUS_PATH)
+    if not data:
+        return ServiceStatus(state="stopped", message="服务状态不可用")
+    return ServiceStatus(
+        state=str(data.get("state") or "stopped"),
+        message=str(data.get("message") or ""),
+        iface=str(data.get("iface") or ""),
+        mac=str(data.get("mac") or ""),
+        ipv4=str(data.get("ipv4") or ""),
+        gateway=str(data.get("gateway") or ""),
+        dns=str(data.get("dns") or ""),
+        updated_at=float(data.get("updated_at", 0)),
+        authenticated_at=data.get("authenticated_at"),
+    )
+
+
+def write_status(status: ServiceStatus) -> None:
+    data = asdict(status)
+    if not data.get("updated_at"):
+        data["updated_at"] = time.monotonic()
+    _atomic_write_json(STATUS_PATH, data)
+
+
+def update_status(
+    state: str,
+    message: str = "",
+    *,
+    iface: str = "",
+    mac: str = "",
+    ipv4: str = "",
+    gateway: str = "",
+    dns: str = "",
+    authenticated_at: str | None = None,
+) -> None:
+    write_status(
+        ServiceStatus(
+            state=state,
+            message=message,
+            iface=iface,
+            mac=mac,
+            ipv4=ipv4,
+            gateway=gateway,
+            dns=dns,
+            updated_at=time.monotonic(),
+            authenticated_at=authenticated_at,
+        )
+    )
+
+
+def read_command(delete: bool = True) -> str | None:
+    data = _read_json(COMMAND_PATH)
+    if not data:
+        return None
+    action = data.get("action")
+    if delete:
+        try:
+            COMMAND_PATH.unlink(missing_ok=True)
+        except Exception:
+            pass
+    return str(action) if action else None
+
+
+def write_command(action: str) -> None:
+    _atomic_write_json(
+        COMMAND_PATH,
+        {"action": action, "created_at": utc_now_iso()},
+    )
+
+
+def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    tmp_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    for attempt in range(3):
+        try:
+            tmp_path.replace(path)
+            return
+        except PermissionError:
+            if attempt < 2:
+                time.sleep(0.1)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        tmp_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _read_json(path: Path) -> dict[str, Any] | None:
+    try:
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+# ── Startup shortcut ─────────────────────────────────────────────────────────
 
 
 def startup_shortcut_path() -> Path:

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 import subprocess
@@ -10,7 +10,14 @@ from enum import Enum
 import psutil
 from scapy.all import get_if_hwaddr, sendp, sniff
 
-from sysu_netauth.core.config import AppConfig
+from sysu_netauth.core.config import (
+    AppConfig,
+    load_config,
+    read_command,
+    save_config,
+    update_status,
+    utc_now_iso,
+)
 from sysu_netauth.core.eapol import (
     PAE_GROUP,
     AuthOptions,
@@ -25,17 +32,11 @@ from sysu_netauth.core.eapol import (
 from sysu_netauth.core.interfaces import (
     find_iface_by_mac,
     get_interface_network_info,
+    has_physical_media_psutil,
     list_auth_candidate_interfaces,
     pick_best_candidate,
 )
 from sysu_netauth.core.npcap import has_npcap
-from sysu_netauth.core.shared_store import (
-    ensure_shared_config,
-    read_command,
-    save_shared_config,
-    update_status,
-    utc_now_iso,
-)
 
 MAX_RETRIES = 5
 AUTH_TIMEOUT_SECONDS = 10
@@ -123,7 +124,7 @@ class RenewListener(threading.Thread):
                             src_mac, PAE_GROUP, parsed.identifier, self._username
                         )
                         sendp(resp, iface=self.iface, verbose=False)
-                        self.logger.info("handshake probe replied on %s", self.iface)
+                        self.logger.debug("handshake probe replied on %s", self.iface)
                     elif parsed.eap_type == 4 and parsed.data:  # MD5
                         challenge_len = parsed.data[0]
                         challenge = parsed.data[1 : 1 + challenge_len]
@@ -155,16 +156,13 @@ class AuthServiceEngine:
     def __init__(self, stop_event: threading.Event | None = None) -> None:
         self.stop_event = stop_event or threading.Event()
         self.logger = logging.getLogger("sysu_netauth.service")
-        self.config: AppConfig = ensure_shared_config()
+        self.config: AppConfig = load_config()
         self.state = ServiceState.IDLE
         self._status_message = ""
-        self._status_iface = ""
-        self._status_mac = ""
-        self._status_ipv4 = ""
+        self._ni: dict[str, str] = {}  # network info: iface/mac/ipv4/gateway/dns
         self._lock = threading.RLock()
         self._auth_thread: threading.Thread | None = None
         self._auth_candidate_queue: list[str] = []
-        self._auth_flow_manual = False
         self._prev_iface_up: bool | None = None
         self._prev_media: bool | None = None
         self._retry_count = 0
@@ -173,11 +171,14 @@ class AuthServiceEngine:
         self._startup_retry_index = 0
         self._renew_listener: RenewListener | None = None
         self._renew_failure_event = threading.Event()
-        self._next_iface_check_at = 0.0
-        self._next_config_reload_at = 0.0
-        self._next_heartbeat_at = IFACE_WATCH_INTERVAL
         self._authenticated_at: str | None = None
         self._manual_disconnect = False
+        # 周期性任务 (interval, next_run, callback)
+        self._timers: list[list] = [
+            [CONFIG_RELOAD_INTERVAL, 0.0, self.reload_config],
+            [IFACE_WATCH_INTERVAL, 0.0, self._check_iface_status],
+            [IFACE_WATCH_INTERVAL, 0.0, self._heartbeat],
+        ]
 
     @property
     def authenticated(self) -> bool:
@@ -193,27 +194,29 @@ class AuthServiceEngine:
         while not self.stop_event.is_set():
             now = time.monotonic()
             self._handle_command()
-            if now >= self._next_config_reload_at:
-                self.reload_config()
-                self._next_config_reload_at = now + CONFIG_RELOAD_INTERVAL
-            if now >= self._next_iface_check_at:
-                self._check_iface_status()
-                self._next_iface_check_at = now + IFACE_WATCH_INTERVAL
+            # 周期性任务
+            for t in self._timers:
+                interval, next_run, cb = t
+                if now >= next_run:
+                    cb()
+                    t[1] = now + interval
+            # 事件驱动
             if self._renew_failure_event.is_set():
                 self._renew_failure_event.clear()
                 self._cancel_renew()
                 self._set_status(ServiceState.IDLE, "会话失效，重新认证")
                 self._start_auth_flow(manual=False, force=True)
+            # 一次性重试定时器
             if self._next_retry_at and now >= self._next_retry_at:
                 self._next_retry_at = 0.0
                 self._do_retry()
-            # 通用心跳：每 5 秒刷新 updated_at，防止 GUI 判 stale
-            if now >= self._next_heartbeat_at:
-                self._set_status(self.state, self._status_message or self.state.value)
-                self._next_heartbeat_at = now + IFACE_WATCH_INTERVAL
             self.stop_event.wait(1)
 
         self.shutdown()
+
+    def _heartbeat(self) -> None:
+        """刷新 status.json 的 updated_at，防止 GUI 判定 stale。"""
+        self._set_status(self.state, self._status_message or self.state.value)
 
     def shutdown(self) -> None:
         self.logger.info("service engine stopping")
@@ -228,7 +231,7 @@ class AuthServiceEngine:
 
     def reload_config(self) -> None:
         with self._lock:
-            self.config = ensure_shared_config()
+            self.config = load_config()
 
     def _handle_command(self) -> None:
         action = read_command()
@@ -245,7 +248,6 @@ class AuthServiceEngine:
             self.logoff()
         elif action == "reload_config":
             self.reload_config()
-            self._set_status(self.state, "配置已重新加载")
         else:
             self.logger.warning("unknown command ignored: %s", action)
 
@@ -254,30 +256,38 @@ class AuthServiceEngine:
         state: ServiceState,
         message: str,
         *,
+        notify: bool = True,
         iface: str = "",
         mac: str = "",
         ipv4: str = "",
+        gateway: str = "",
+        dns: str = "",
     ) -> None:
         self.state = state
         self._status_message = message
-        # 缓存接口信息；心跳调用时不传参数 → 复用上次的有效值
-        if iface:
-            self._status_iface = iface
-        if mac:
-            self._status_mac = mac
-        if ipv4:
-            self._status_ipv4 = ipv4
-        # 非 AUTHENTICATED 状态 → 清除缓存的 mac/ipv4
+        # 合并网络信息（空值不覆盖 → 心跳复用旧值）
+        for key, val in (
+            ("iface", iface),
+            ("mac", mac),
+            ("ipv4", ipv4),
+            ("gateway", gateway),
+            ("dns", dns),
+        ):
+            if val:
+                self._ni[key] = val
         if state != ServiceState.AUTHENTICATED:
-            self._status_mac = ""
-            self._status_ipv4 = ""
+            self._ni.clear()
+        if not notify:
+            return
         try:
             update_status(
                 state.value,
                 message,
-                iface=self._status_iface or self.config.iface,
-                mac=self._status_mac,
-                ipv4=self._status_ipv4,
+                iface=self._ni.get("iface", "") or self.config.iface,
+                mac=self._ni.get("mac", ""),
+                ipv4=self._ni.get("ipv4", ""),
+                gateway=self._ni.get("gateway", ""),
+                dns=self._ni.get("dns", ""),
                 authenticated_at=(
                     self._authenticated_at
                     if state == ServiceState.AUTHENTICATED
@@ -293,10 +303,21 @@ class AuthServiceEngine:
         return bool(self.config.username) and bool(self.config.password)
 
     def _has_any_media(self) -> bool:
-        """Return True if any physical Ethernet interface has a live network cable."""
+        """Return True if any physical Ethernet interface has a live network cable.
+
+        优先通过 Get-NetAdapter 元数据判断（包含 MediaConnectState），
+        元数据不可用时（Get-NetAdapter 临时失败）降级到 psutil 兜底：
+        使用 has_physical_media_psutil()，它应用与主路径一致的过滤规则
+        （排除虚拟/无线/回环网卡 + 虚拟 MAC OUI），确保仅物理网卡被计入。
+        """
         from sysu_netauth.core.interfaces import list_ethernet_candidates
 
-        return any(c.has_media for c in list_ethernet_candidates())
+        candidates = list_ethernet_candidates()
+        if candidates:
+            return any(c.has_media for c in candidates)
+        # 元数据不可用（Get-NetAdapter 失败），用 psutil 兜底
+        self.logger.debug("metadata unavailable, falling back to psutil")
+        return has_physical_media_psutil()
 
     def _schedule_startup_auth(self) -> None:
         if not self.config.auto_auth:
@@ -309,18 +330,6 @@ class AuthServiceEngine:
         self._startup_retry_index = 0
         self._set_status(ServiceState.IDLE, "准备自动认证")
         self._start_auth_flow(manual=False)
-
-    def _auth_options(self, iface: str) -> AuthOptions:
-        if not self.config.username:
-            raise RuntimeError("请先填写NetID")
-        if not self.config.password:
-            raise RuntimeError("请先填写密码")
-        return AuthOptions(
-            iface=iface,
-            username=self.config.username,
-            password=self.config.password,
-            timeout=AUTH_TIMEOUT_SECONDS,
-        )
 
     def _resolve_saved_iface(self) -> str | None:
         supported = {candidate.name for candidate in list_auth_candidate_interfaces()}
@@ -378,15 +387,19 @@ class AuthServiceEngine:
             self._set_status(ServiceState.FAILED, "请先选择网卡")
             return
         self._auth_candidate_queue = self._auth_candidates()
-        self._auth_flow_manual = manual
         if not self._auth_candidate_queue:
             if not self._has_any_media():
-                self._set_status(ServiceState.IDLE, "未检测到已连接网线")
-                # 无物理链路时不消耗重试，仅靠 _check_iface_status 的 5s tick
-                # 检测网线插入事件后自动恢复
+                # 启动宽限期内不通知 GUI（网卡驱动可能尚未加载完毕），
+                # 心跳将在几秒内把 IDLE 写入磁盘。宽限期外则立即告知用户。
+                self._set_status(
+                    ServiceState.IDLE,
+                    "未检测到已连接网线",
+                    notify=not self._in_startup_grace(),
+                )
+                return
             else:
-                self._set_status(ServiceState.IDLE, "无已连接有线网卡")
-                # 有物理链路但网卡未就绪（如 DHCP 未完成），调度重试
+                # 有物理链路但网卡未就绪（如 DHCP 未完成），调度重试。
+                # _schedule_retry 不写 status.json，由心跳兜底。
                 self._schedule_retry()
             return
         self._authenticate_next_candidate()
@@ -417,7 +430,12 @@ class AuthServiceEngine:
     ) -> None:
         try:
             result = authenticate(
-                self._auth_options(iface),
+                AuthOptions(
+                    iface=iface,
+                    username=self.config.username,
+                    password=self.config.password,
+                    timeout=AUTH_TIMEOUT_SECONDS,
+                ),
                 progress=lambda _status, message: self.logger.info(message),
                 should_stop=auth_stop.is_set,
             )
@@ -459,8 +477,9 @@ class AuthServiceEngine:
             return
 
         self._authenticated_at = None
-        if not self._auth_flow_manual and status != AuthStatus.NO_NPCAP:
-            self._set_status(ServiceState.IDLE, "认证未成功，等待重试")
+        if status != AuthStatus.NO_NPCAP:
+            # 还有重试机会 → 不写中间态到 status.json，避免 GUI 状态卡片闪烁。
+            # _schedule_retry() 会在耗尽重试次数后写入终态 FAILED。
             if (
                 status == AuthStatus.TIMEOUT
                 and self._in_startup_grace()
@@ -515,14 +534,24 @@ class AuthServiceEngine:
                 self.logger.info(
                     "connectivity OK on %s / %s", result.iface, result.ip or ""
                 )
-                if not self.authenticated:
-                    self._set_status(
-                        ServiceState.AUTHENTICATED,
-                        "已认证",
-                        iface=result.iface,
-                        mac=result.mac or "",
-                        ipv4=result.ip or "",
-                    )
+                # 每次重新认证后刷新完整网络信息（含网关/DNS）
+                iface = result.iface or self.config.iface
+                net_info = get_interface_network_info(iface) if iface else None
+                self._set_status(
+                    ServiceState.AUTHENTICATED,
+                    "已认证",
+                    iface=iface,
+                    mac=result.mac or "",
+                    ipv4=(
+                        net_info.ipv4
+                        if net_info and net_info.ipv4
+                        else (result.ip or "")
+                    ),
+                    gateway=net_info.gateway if net_info else "",
+                    dns=(
+                        ", ".join(net_info.dns[:2]) if net_info and net_info.dns else ""
+                    ),
+                )
                 self._schedule_renew()
             else:
                 # 连通性检查失败：退避重试
@@ -542,7 +571,7 @@ class AuthServiceEngine:
                 iface=iface,
                 last_success_mac=mac,
             )
-            save_shared_config(self.config)
+            save_config(self.config)
         except Exception as exc:
             self.logger.warning("failed to save success iface: %s", exc)
 
@@ -562,12 +591,18 @@ class AuthServiceEngine:
             interval = STARTUP_RETRY_INTERVALS[index]
             self._startup_retry_index += 1
             self._next_retry_at = time.monotonic() + interval
+            self.state = ServiceState.IDLE
+            self._status_message = "认证未成功，等待重试"
             return
         if self._retry_count >= MAX_RETRIES:
             self._set_status(ServiceState.FAILED, "多次认证失败，请检查 NetID 或网络")
             return
         self._retry_count += 1
         self._next_retry_at = time.monotonic() + self.config.retry_interval
+        # 不写 status.json，仅更新内部状态。心跳（每 5s）会自然
+        # 把 IDLE 同步到磁盘，避免中间态造成 GUI 状态卡片闪烁。
+        self.state = ServiceState.IDLE
+        self._status_message = "认证未成功，等待重试"
 
     def _cancel_retry(self) -> None:
         self._next_retry_at = 0.0
@@ -620,7 +655,17 @@ class AuthServiceEngine:
                 else:
                     self._set_status(ServiceState.IDLE, "待命")
             else:
-                # 所有网线拔除
+                # 所有网线拔除 — 但若已认证，先做二次确认
+                # 避免 Get-NetAdapter 临时故障（Session 0 中间歇性崩溃）
+                # 导致误判为网线拔除、中断会话
+                if self.authenticated and has_physical_media_psutil():
+                    self.logger.warning(
+                        "media appeared gone but psutil shows active link — "
+                        "metadata transient failure, preserving session"
+                    )
+                    self._prev_media = True  # 抑制边沿触发
+                    return
+                # 真实的介质移除
                 self._cancel_renew()
                 self._cancel_retry()
                 self._authenticated_at = None
@@ -642,7 +687,7 @@ class AuthServiceEngine:
             best = pick_best_candidate()
             if best and best.is_up:
                 self.config = replace(self.config, iface=best.name)
-                save_shared_config(self.config)
+                save_config(self.config)
                 iface = best.name
                 if self.config.auto_auth and not self._manual_disconnect:
                     self._start_auth_flow(manual=False)
@@ -659,7 +704,7 @@ class AuthServiceEngine:
             matched = find_iface_by_mac(self.config.last_success_mac)
             if matched:
                 self.config = replace(self.config, iface=matched.name)
-                save_shared_config(self.config)
+                save_config(self.config)
                 current_up = matched.is_up
             else:
                 current_up = False
@@ -697,7 +742,7 @@ class AuthServiceEngine:
                         iface=failover.name,
                         iface_mode="auto",
                     )
-                    save_shared_config(self.config)
+                    save_config(self.config)
                     current_up = True
                     self._retry_count = 0
                     self._start_auth_flow(manual=False)
@@ -708,10 +753,15 @@ class AuthServiceEngine:
         iface = self.config.iface
         mac = ""
         ipv4 = ""
+        gateway = ""
+        dns = ""
         try:
             if iface:
                 mac = get_if_hwaddr(iface)
-                ipv4 = get_interface_network_info(iface).ipv4 or ""
+                net_info = get_interface_network_info(iface)
+                ipv4 = net_info.ipv4 or ""
+                gateway = net_info.gateway or ""
+                dns = ", ".join(net_info.dns[:2]) if net_info.dns else ""
         except (OSError, RuntimeError):
             self.logger.warning("failed to get MAC/IP for %s", iface, exc_info=True)
         self._set_status(
@@ -720,6 +770,8 @@ class AuthServiceEngine:
             iface=iface,
             mac=mac,
             ipv4=ipv4,
+            gateway=gateway,
+            dns=dns,
         )
 
     def logoff(self) -> None:

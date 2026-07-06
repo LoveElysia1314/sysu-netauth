@@ -11,17 +11,10 @@ import sys
 from pathlib import Path
 
 
-def _project_root() -> Path:
-    """Return the project root (development mode only)."""
-    return Path(__file__).resolve().parent.parent.parent
-
-
 def resolve_asset_path(name: str, ext: str = "ico") -> Path:
     """Resolve the absolute path of an asset file.
 
     Supports both PyInstaller frozen builds and development mode.
-    Returns the first existing file found, or a best-guess path
-    if no candidate exists (the caller should handle missing files).
     """
     filename = f"{name}.{ext}"
     if getattr(sys, "frozen", False):
@@ -36,4 +29,9 @@ def resolve_asset_path(name: str, ext: str = "ico") -> Path:
             if candidate.is_file():
                 return candidate
         return candidates[0]
-    return _project_root() / "sysu_netauth" / "assets" / filename
+    return (
+        Path(__file__).resolve().parent.parent.parent
+        / "sysu_netauth"
+        / "assets"
+        / filename
+    )

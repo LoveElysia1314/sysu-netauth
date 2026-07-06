@@ -10,7 +10,7 @@
 
 ### 1.1 双进程模型
 
-```
+```text
 系统启动
   └─ SYSUNetAuth Windows 服务 (Session 0)     ← 认证执行者
        ├─ 读取 config.json
@@ -39,31 +39,30 @@
 
 ### 1.3 入口分发
 
-```
+```text
 run.py ──→ runner.py ──┬─ 无 CLI 参数 ──→ app/tray.py（GUI 配置面板）
                         ├─ --startup    ──→ 处理服务模式 + 启动 GUI 或静默
                         ├─ --service    ──→ service/win_service.py（Windows 服务）
                         └─ 有 CLI 参数 ──→ cli.py（命令行模式）
 ```
 
-- `runner.py`：单例保护（`QLocalServer` IPC）、`AttachConsole` 挂接父进程终端、分发入口
+- `runner.py`：单例保护（Win32 Mutex）、`AttachConsole` 挂接父进程终端、分发入口
 - GUI 模式：`--startup` 标记时以用户登录后自启模式运行
 - 服务模式：`--service` 转交 pywin32 服务框架；打包后使用 `sysu_netauth_service.exe`（不含 PySide6）
 - CLI 模式：所有非 `--startup` 非 `--service` 参数转交 `cli.py` 解析
 
 ### 1.4 文件结构
 
-```
+```text
 sysu_netauth/
-├── runner.py           # 入口分发：单例保护、AttachConsole、CLI/GUI 路由
+├── runner.py           # 入口分发：单例保护(Win32 Mutex)、AttachConsole、CLI/GUI 路由
 ├── cli.py              # argparse CLI：认证/探测/注销/网卡列表/检查 Npcap
 │
 ├── core/               # ── 无 GUI 核心库（可被 service 和 app 共用）──
-│   ├── config.py       # AppConfig 数据类、JSON 读写、旧配置迁移、自启快捷方式
-│   ├── shared_store.py # 进程间共享文件 (config/status/command JSON)
-│   ├── single_instance.py  # QLocalServer 单实例 IPC（仅 GUI 模式）
+│   ├── config.py       # AppConfig/ServiceStatus 数据类、JSON 读写、状态/命令存储、自启快捷方式
+│   ├── assets.py       # 资源路径解析（开发/frozen 模式兼容）
 │   ├── eapol.py        # EAPOL/MD5 协议栈：帧构造、parse、认证握手、注销
-│   ├── interfaces.py   # 网卡枚举、类型判定、评分排序、EAPOL 探测
+│   ├── interfaces.py   # 网卡枚举(Win32 GetAdaptersAddresses)、类型判定、评分、EAPOL 探测、网络信息
 │   └── npcap.py        # Npcap 检测、下载、完整性校验、提权安装
 │
 ├── service/            # ── Windows 服务进程（不含 Qt）──
@@ -99,7 +98,7 @@ sysu_netauth/
 
 #### config.json
 
-`core/config.py` 的 `AppConfig` 数据类管理所有配置字段。旧版 `%APPDATA%\SYSUNetAuth\config.json` 首次运行时自动迁移到 `%ProgramData%`（不删除旧文件）。
+`core/config.py` 的 `AppConfig` 数据类管理所有配置字段。
 
 #### status.json
 
@@ -110,6 +109,8 @@ sysu_netauth/
   "iface": "以太网",
   "mac": "00:11:22:33:44:55",
   "ipv4": "10.0.0.2",
+  "gateway": "10.0.0.1",
+  "dns": "114.114.114.114, 223.5.5.5",
   "updated_at": 697.2198229,
   "authenticated_at": "2026-07-05T12:00:00+08:00"
 }
@@ -131,7 +132,7 @@ sysu_netauth/
 
 引擎维护五态 `ServiceState`，各状态**互斥**——行为判定只需检查 `self.state`，无需组合标志位：
 
-```
+```text
                      ┌──────────────┐
                      │    IDLE      │
                      │ (待命/无网线 │
@@ -159,20 +160,19 @@ sysu_netauth/
                   └──────────┘
 ```
 
-| 状态             | 含义         | 行为                                                                            |
-| ---------------- | ------------ | ------------------------------------------------------------------------------- |
-| `IDLE`           | 待命中       | 全量 tick，由 `_next_retry_at`/`_media_available`/`_manual_disconnect` 驱动决策 |
-| `AUTHENTICATING` | 握手进行中   | 全量 tick，`_auth_thread.is_alive()` 防止重复                                   |
-| `AUTHENTICATED`  | 认证成功     | 全量 tick，`authenticated` 属性唯一依赖本状态                                   |
-| `FAILED`         | 不可恢复错误 | 全量 tick，停止自动重试                                                         |
-| `STOPPED`        | 服务停止     | 不进入主循环                                                                    |
+| 状态             | 含义         | 行为                                     |
+| ---------------- | ------------ | ---------------------------------------- |
+| `IDLE`           | 待命中       | 等待触发（介质恢复、重试到期、用户指令） |
+| `AUTHENTICATING` | 握手进行中   | 防止并发启动多次认证                     |
+| `AUTHENTICATED`  | 认证成功     | RenewListener 常驻保活                   |
+| `FAILED`         | 不可恢复错误 | 停止自动重试，需用户介入                 |
+| `STOPPED`        | 服务停止     | 不进入主循环                             |
 
-**设计要点**（来自重构经验）：
+**设计原则**：
 
-- 原 `STARTING`、`NO_MEDIA`、`WAITING_NETWORK` 三态统一归入 `IDLE`，通过消息字符串区分子场景。减少状态组合爆炸
-- `NO_MEDIA` 的行为守卫改用 `_check_iface_status()` 中实时计算的 `current_media` 条件，而非状态值
-- 重试调度由 `_next_retry_at` 定时器独立驱动，与状态正交
-- `_manual_disconnect` 是与状态正交的布尔标志，仅用于 GUI 图标区分
+- **最小状态集**：中间态（无网线、等待网络、重试等待）统一归入 `IDLE`，通过 `status.json` 的 `message` 字段区分子场景，避免状态组合爆炸
+- **正交关注点分离**：介质检测、重试调度、手动断开三者独立管理，各自的判定条件不与状态值耦合
+- **GUI 仅依赖状态枚举值**：5 个图标颜色直接映射 5 个状态，`message` 仅作展示文本
 
 GUI 端通过轮询 `status.json` 映射为图标：
 
@@ -188,14 +188,15 @@ GUI 端通过轮询 `status.json` 映射为图标：
 
 ### 2.3 服务主循环
 
-引擎以 1 秒 tick 运行，依次处理：
+引擎以 1 秒 tick 运行，周期性任务通过统一的 `_timers` 列表管理：
 
 1. 读取 `command.json` 指令
-2. 每 3 秒重载配置文件
-3. 每 5 秒检查网卡状态变化（`_check_iface_status`）
-4. 检测 `RenewListener` 失效事件 → 触发重认证
-5. 重试定时器到期执行重试
-6. 每 5 秒刷新 `status.json` 心跳
+2. 周期性任务调度（每个 timer 持有 `[interval, next_run, callback]`）：
+   - 每 3 秒重载配置文件
+   - 每 5 秒检查网卡状态变化
+   - 每 5 秒刷新 `status.json` 心跳
+3. 检测 `RenewListener` 失效事件 → 触发重认证
+4. 重试定时器到期执行重试
 
 认证线程与 `RenewListener` 不会同时嗅探同一网卡。
 
@@ -211,7 +212,7 @@ GUI 端通过轮询 `status.json` 映射为图标：
 
 #### 候选网卡构建
 
-```
+```text
 _auth_candidates()
     ├── manual 模式 → _resolve_saved_iface()
     │                  1. 配置的网卡名
@@ -228,7 +229,7 @@ _auth_candidates()
 
 `core/eapol.authenticate()` 实现标准 EAP-MD5：
 
-```
+```text
 EAPOL-Start ──广播──→ PAE 组播 MAC 01:80:c2:00:00:03
                     ←── EAP-Request/Identity ──
 EAP-Response/Identity (NetID, GBK) ──→
@@ -269,7 +270,7 @@ EAP-Response/MD5 (MD5(id|GBK(password)|challenge)) ──→
 
 唯一的硬件检测入口，由服务主循环每 5 秒调度：
 
-```
+```text
 _check_iface_status()
     ├── 无配置网卡 → pick_best_candidate()
     │   ├── 找到 → 补充 iface 配置 + auto_auth 时自动认证
@@ -289,7 +290,7 @@ _check_iface_status()
 
 ### 2.7 重试策略
 
-```
+```text
 _schedule_retry()
     ├── 已认证 → 跳过
     ├── 启动宽限期内（60 秒）→ Fibonacci: 3/5/8/13/21 秒
@@ -316,27 +317,16 @@ _schedule_retry()
 
 ### 2.9 单例保护（GUI 模式）
 
-使用 `QLocalServer` / `QLocalSocket`（命名管道 IPC），见 `core/single_instance.py`。
+使用 Win32 命名 Mutex（`CreateMutexW`），错误码 `ERROR_ALREADY_EXISTS`（183）表示已有实例运行。
 
-```
+```text
 第二次启动
-  ├─ QApplication(sys.argv)
-  ├─ SingleInstanceManager.notify_existing()
-  │   ├─ 管道存在 → 发送 "activate" → sys.exit(0)
-  │   └─ 管道不存在 → start_server() → 成为主实例
-  │
-主实例
-  ├─ activate_requested 信号 → tray.show_status() ← 自己恢复窗口
-  └─ 进程退出 → 管道自动释放
+  └─ CreateMutexW(name="SYSUNetAuth")
+       ├─ GetLastError() == 183 → sys.exit(0)
+       └─ 否则 → 成为主实例，进入 GUI 循环
 ```
 
-**为什么不用 Mutex？**
-
-- 进程崩溃后 Mutex 可能残留
-- Mutex 方案需要 `EnumWindows` 猜 HWND，不可靠
-- `QLocalServer` 与 Qt 事件循环天然集成，无竞态
-
-仅在 GUI 模式启用；CLI 模式允许多开。
+进程退出时 Mutex 由 OS 自动释放。仅在 GUI 模式启用；CLI 模式允许多开。
 
 ---
 
@@ -350,7 +340,6 @@ GUI 的详细布局和组件不在此重复（直接读 `views.py` 和 `tray.py`
 - **防重复通知**：内置冷却期，防止短时间内重复弹窗
 - **通知归属**：服务运行在 Session 0 不能可靠弹出桌面通知，因此桌面通知由 GUI 负责
 - **配置即时生效**：配置变化立即写入 `config.json` + `write_command("reload_config")`
-- **启动时序**：见 `12.3`（README 有精简版），完整逻辑在 `runner.py` 和 `tray.py`
 
 ---
 
@@ -358,9 +347,8 @@ GUI 的详细布局和组件不在此重复（直接读 `views.py` 和 `tray.py`
 
 完整的配置字段表见 README「配置文件」章节，此处仅记录与架构相关的要点：
 
-- **存储路径**：`%ProgramData%\SYSUNetAuth\config.json`（旧版 `%APPDATA%` 自动迁移）
-- **密码存储**：明文。服务在 Session 0 无法可靠调用 Credential Manager，JSON 文件 ACL 设为仅管理员可读
-- **废弃字段**：旧版配置中的 `operation_mode`、`auto_start`、`close_behavior` 等在读取时静默忽略，写入时不再输出
+- **存储路径**：`%ProgramData%\SYSUNetAuth\config.json`
+- **未知字段静默忽略**：配置加载时仅提取已知字段，未知键不写入。新版本新增字段对旧配置透明
 
 ---
 
@@ -377,15 +365,13 @@ GUI 的详细布局和组件不在此重复（直接读 `views.py` 和 `tray.py`
 - 服务进程内存占用更低（~15 MB vs GUI 的 ~80 MB）
 - 条件 import 无法规避 PyInstaller 打包时自动收集 PySide6，因此必须分为两个入口
 
-### 3.2 为什么五态而不是枚举所有场景？
+### 3.2 为什么是五态？
 
-旧版本有 7 个状态（含 `STARTING`、`NO_MEDIA`、`WAITING_NETWORK`），问题：
+将认证服务的所有运行场景归入五个互斥状态而非逐一枚举每种场景：
 
-- 状态组合爆炸：`NO_MEDIA + 重试中` vs `WAITING_NETWORK + 待命` 难以区分
-- 新增场景需要新增状态，导致状态机膨胀
-- GUI 端需要等量的映射分支
-
-重构后：无网线、无候选网卡、重试等待等全部归入 `IDLE`，通过 `status.json` 的 `message` 字段区分子场景。GUI 端只需要 5 种图标映射。
+- 状态间是互斥的，行为判定只需检查当前状态，无需组合标志位
+- 可恢复的临时场景（无网线、无候选网卡、重试等待）不单独设状态，全部归入 `IDLE`，通过 `status.json` 的 `message` 字段传达具体子场景
+- 每个状态对应一种确定的行为模式，新增子场景不会导致状态机膨胀
 
 ### 3.3 为什么用 JSON 文件而不是进程间 IPC？
 
@@ -393,13 +379,13 @@ GUI 的详细布局和组件不在此重复（直接读 `views.py` 和 `tray.py`
 
 ### 3.4 为什么 GUI 不直接调用认证 API？
 
-历史教训：旧版本 GUI 内置认证状态机，导致：
+将认证职责放在 GUI 进程中存在根本性问题：
 
-- GUI 退出后认证中断（用户以为还在线）
-- Session 0 和 Session 1 的网卡枚举结果不一致
-- GUI 卡死时影响认证
+- GUI 退出后认证中断，用户无法察觉
+- Session 0 和 Session 1 的网卡枚举结果可能不一致
+- GUI 阻塞时影响认证时效
 
-解决方案：认证职责完全交给 Windows 服务，GUI 退化为配置面板。
+因此认证职责完全交给 Windows 服务，GUI 仅作为配置面板和状态展示。
 
 ---
 
@@ -407,7 +393,7 @@ GUI 的详细布局和组件不在此重复（直接读 `views.py` 和 `tray.py`
 
 ### 4.1 构建流程
 
-```
+```text
 python scripts\build.py              # 完整构建：EXE → 安装包 → ZIP
 python scripts\build.py --skip-installer  # 仅 EXE
 ```
@@ -422,18 +408,17 @@ python scripts\build.py --skip-installer  # 仅 EXE
 
 ### 4.2 安装包行为
 
-1. 停止旧版 GUI 和旧服务（`taskkill` + `sc stop`，最多等 10 秒）
-2. 删除旧的 SYSTEM 计划任务（兼容旧版遗留）
-3. 创建 `%ProgramData%\SYSUNetAuth` 并设置 Users 组可写
-4. 注册 `SYSUNetAuth` 服务，启动类型自动
-5. 配置故障恢复（`sc failure`：首次失败 60 秒后重启）
-6. 加入系统 PATH（支持 `sysu_netauth` 命令行）
-7. 安装完成后启动服务
+1. 停止已在运行的 GUI 进程和服务（`taskkill` + `sc stop`，最多等 10 秒）
+2. 创建 `%ProgramData%\SYSUNetAuth` 并设置 Users 组可写
+3. 注册 `SYSUNetAuth` 服务，启动类型自动
+4. 配置故障恢复（`sc failure`：首次失败 60 秒后重启）
+5. 加入系统 PATH（支持 `sysu_netauth` 命令行）
+6. 安装完成后启动服务
 
 ### 4.3 卸载包行为
 
 1. 停止并删除 `SYSUNetAuth` 服务
-2. 删除旧 Startup 快捷方式和旧计划任务
+2. 删除 Startup 快捷方式等残留文件
 3. 询问是否保留 `%ProgramData%\SYSUNetAuth`（含账号密码）
 
 ---
@@ -442,7 +427,7 @@ python scripts\build.py --skip-installer  # 仅 EXE
 
 ### 5.1 服务独立性
 
-```
+```text
 # 未登录 Windows 时验证
 sc start SYSUNetAuth
 timeout /t 15 /nobreak
@@ -452,7 +437,7 @@ Get-Content "$env:ProgramData\SYSUNetAuth\status.json"
 
 ### 5.2 GUI 与服务分离
 
-```
+```text
 # GUI 退出后服务继续运行
 # 1. 打开 GUI，确认状态显示正常
 # 2. 关闭 GUI
@@ -462,7 +447,7 @@ Get-Content "$env:ProgramData\SYSUNetAuth\status.json"
 
 ### 5.3 网卡热插拔
 
-```
+```text
 # 服务已认证状态
 # 1. 拔掉网线
 # 2. 等待 ≤ 10 秒，检查 status.json: state → "idle", message 含网线断开
@@ -472,7 +457,7 @@ Get-Content "$env:ProgramData\SYSUNetAuth\status.json"
 
 ### 5.4 交换机重认证
 
-```
+```text
 # 认证成功后：
 # 1. 启动 Wireshark 过滤 eapol，观察约每 120 秒出现 EAP-Request/Identity
 # 2. 确认程序自动回复 Identity Response
@@ -481,7 +466,7 @@ Get-Content "$env:ProgramData\SYSUNetAuth\status.json"
 
 ### 5.5 服务进程隔离
 
-```
+```text
 # 确认服务不加载 PySide6
 Get-Process -Name sysu_netauth_service | Select-Object -ExpandProperty Modules |
     Where-Object ModuleName -like "*Qt*"

@@ -10,8 +10,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from sysu_netauth.core.config import APP_ID
-from sysu_netauth.core.single_instance import SingleInstanceManager
+from sysu_netauth.core.config import APP_ID, load_config
 
 GUI_FLAGS = {"--startup"}
 SERVICE_FLAGS = {"--service"}
@@ -75,9 +74,7 @@ def main() -> None:
     # ── --startup 参数处理 ──
     started_by_startup = "--startup" in gui_flags
     if started_by_startup:
-        from sysu_netauth.core.shared_store import ensure_shared_config
-
-        cfg = ensure_shared_config()
+        cfg = load_config()
         if cfg.service_mode:
             import subprocess
 
@@ -92,25 +89,26 @@ def main() -> None:
         if not cfg.launch_gui_on_login:
             return
 
-    # ── 创建 QApplication（QLocalServer 需要） ──
+    # ── 单实例保护 (Win32 Mutex) ──
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    _mutex = kernel32.CreateMutexW(None, False, APP_ID)
+    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        sys.exit(0)
+
+    # ── 创建 QApplication ──
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setWindowIcon(_app_icon())
 
-    # ── 单实例保护 ──
-    single = SingleInstanceManager(APP_ID)
-    if single.notify_existing():
-        sys.exit(0)
-    if not single.start_server():
-        if single.notify_existing(timeout_ms=2000):
-            sys.exit(0)
-        print(f"[{APP_ID}] 无法创建单实例管道", file=sys.stderr)
-        sys.exit(1)
-
     # ── 启动 GUI ──
     from sysu_netauth.app.tray import main as tray_main
 
-    tray_main(app=app, single_instance=single, started_by_startup=started_by_startup)
+    tray_main(app=app, started_by_startup=started_by_startup)
 
 
 if __name__ == "__main__":
