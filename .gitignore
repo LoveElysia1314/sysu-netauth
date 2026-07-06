@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+
+# Local IDE/editor state
+.idea/
+.vscode/
+
+# Local configuration and logs
+.env
+config.json
+*.log
+private/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+SYSUNetAuth_Setup_v*.exe
+SYSUNetAuth_Setup_v*.zip
+
+# PyInstaller
+*.manifest
+
+# Reverse-engineering generated bulk artifacts
+analysis/
+analysis/*.disasm.txt
+analysis/*.bin
+
+# OS noise
+Thumbs.db
+.DS_Store
+sysu_netauth.spec

@@ -1,0 +1,31 @@
+[tool.vulture]
+# 排除虚拟环境、构建产物、第三方代码
+exclude = [
+    ".venv/",
+    "venv/",
+    "build/",
+    "dist/",
+    "private/",
+    "analysis/",
+    "*.egg-info/",
+    "__pycache__/",
+    "scripts/Languages/",
+]
+# 需要忽略的误报白名单
+#
+# 注意：Vulture 的 ignore_names 只做 fnmatch(name, pattern) 匹配，
+# 不支持 path:name 格式。path:name 格式是 whitelist 文件的写法，
+# 在 pyproject.toml 的 ignore_names 中不生效。
+#
+# 每个条目就是简单的名称模式（支持 fnmatch 通配符）。
+ignore_names = [
+    # pywin32 服务框架 — 通过 Windows SCM 反射调用
+    "SvcStop",
+    "SvcDoRun",
+    # pywin32 COM 属性 — 通过 WScript.Shell COM 对象动态分发
+    "TargetPath",
+    "Arguments",
+    "WorkingDirectory",
+    "IconLocation",
+    "Description",
+]
