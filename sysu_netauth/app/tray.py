@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import os
-import socket
 import sys
 import time
 
 import subprocess
 
-import psutil
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
@@ -22,14 +20,12 @@ from sysu_netauth.core.config import (
     set_gui_launch_on_login,
 )
 from sysu_netauth.core.interfaces import (
-    get_interface_network_info,
     list_auth_candidate_interfaces,
-    pick_best_candidate,
 )
 from sysu_netauth.core.assets import resolve_asset_path
 from sysu_netauth.core.npcap import has_npcap
-from sysu_netauth.core.shared_store import (
-    ensure_shared_config,
+from sysu_netauth.core.config import (
+    load_config,
     read_status,
     write_command,
 )
@@ -65,16 +61,10 @@ def _stop_service() -> None:
     _service_sc(f'stop "{APP_ID}"')
 
 
-_NETINFO_CACHE: list = [0.0, None, None]
-NETINFO_CACHE_TTL = 30.0
 STATUS_POLL_INTERVAL_MS = 2000
-INFO_REFRESH_INTERVAL_MS = 30000
 SERVICE_STALE_SECONDS = 15.0
-# 通知冷却（秒）：同类型通知最小间隔，防止显示器关闭期间积累轰炸
-NOTIFY_COOLDOWN: dict[str, float] = {
-    "failed": 300,
-    "authenticated": 180,  # 3 分钟（好消息可略频繁）
-}
+NOTIFY_COOLDOWN_AUTHENTICATED = 180
+NOTIFY_COOLDOWN_FAILED = 300
 
 
 TRAY_STATES = ("blue", "gray", "orange", "green", "red")
@@ -103,7 +93,7 @@ class CampusTray:
     def __init__(self, app: QApplication, started_by_startup: bool = False) -> None:
         self.app = app
         self.started_by_startup = started_by_startup
-        self.config = ensure_shared_config()
+        self.config = load_config()
         self.status_window = MainWindow()
         self._last_service_state: str | None = None
         self._last_notify_at: dict[str, float] = {}
@@ -118,7 +108,7 @@ class CampusTray:
 
         self.status_window.auth_btn.clicked.connect(self._on_user_authenticate)
         self.status_window.logoff_btn.clicked.connect(self.logoff)
-        self.status_window.open_logs_btn.clicked.connect(self._open_logs)
+        self.status_window.restart_service_btn.clicked.connect(self._restart_service)
         self.status_window.quit_btn.clicked.connect(self._on_quit)
         self.status_window.npcap_installed.connect(self._on_npcap_installed)
         self.status_window.advanced_settings_changed.connect(self._on_advanced_changed)
@@ -136,12 +126,6 @@ class CampusTray:
         self._status_poll_timer.setInterval(STATUS_POLL_INTERVAL_MS)
         self._status_poll_timer.timeout.connect(self._poll_service_status)
         self._status_poll_timer.start()
-
-        self._info_refresh_timer = QTimer()
-        self._info_refresh_timer.setInterval(INFO_REFRESH_INTERVAL_MS)
-        self._info_refresh_timer.timeout.connect(self._refresh_info_panel)
-        self._info_refresh_timer.start()
-        QTimer.singleShot(2500, self._refresh_info_panel)
 
         if not has_npcap():
             self.set_state("orange", "Npcap 未安装")
@@ -242,15 +226,18 @@ class CampusTray:
             self.status_window.install_npcap()
 
     def _on_npcap_installed(self) -> None:
-        self.set_state("blue", "Npcap 已安装")
-        self.status_window.append_log("Npcap 检测通过，已请求服务重新加载配置")
-        write_command("reload_config")
+        self.status_window.append_log("Npcap 检测通过，正在重启服务...")
+        # 服务曾在 run() 入口因 has_npcap()==False 直接退出，
+        # 不在主循环中 → 无法响应 command.json。必须完整重启。
+        _service_sc(f'stop "{APP_ID}"')
+        time.sleep(2)
+        _service_sc(f'start "{APP_ID}"')
 
-    def _open_logs(self) -> None:
-        try:
-            os.startfile(str(CONFIG_PATH.parent))
-        except Exception as exc:
-            QMessageBox.warning(None, APP_DISPLAY_NAME, f"无法打开日志目录：{exc}")
+    def _restart_service(self) -> None:
+        self.status_window.append_log("正在重启服务...")
+        _service_sc(f'stop "{APP_ID}"')
+        time.sleep(2)
+        _service_sc(f'start "{APP_ID}"')
 
     def set_state(self, icon_key: str, message: str) -> None:
         self.tray.setIcon(self.icons[icon_key])
@@ -258,129 +245,85 @@ class CampusTray:
         self.status_action.setText(f"状态：{message}")
         self.status_window.set_state(icon_key, message)
 
-    def _notify_state(self, state: str, message: str) -> None:
-        cooldown = NOTIFY_COOLDOWN.get(state)
-        if cooldown is None:
-            return
+    def _notify_state(self, user_state: str, message: str) -> None:
         now = time.monotonic()
-        last = self._last_notify_at.get(state, 0.0)
-        if now - last < cooldown:
-            return
-        self._last_notify_at[state] = now
-        templates: dict[str, tuple[str, str, int]] = {
-            "authenticated": ("校园网已连接", "green", 3000),
-            "failed": (f"认证失败：{message}", "red", 5000),
-        }
-        tmpl = templates.get(state)
-        if tmpl is None:
-            return
-        self.tray.showMessage(APP_DISPLAY_NAME, tmpl[0], self.icons[tmpl[1]], tmpl[2])
+        if user_state == "authenticated":
+            if now - self._last_notify_at.get("authenticated", 0) < NOTIFY_COOLDOWN_AUTHENTICATED:
+                return
+            self._last_notify_at["authenticated"] = now
+            self.tray.showMessage(APP_DISPLAY_NAME, "校园网已连接", self.icons["green"], 3000)
+        elif user_state == "failed":
+            if now - self._last_notify_at.get("failed", 0) < NOTIFY_COOLDOWN_FAILED:
+                return
+            self._last_notify_at["failed"] = now
+            self.tray.showMessage(APP_DISPLAY_NAME, f"认证失败：{message}", self.icons["red"], 5000)
 
     def _status_is_stale(self, updated_at: float) -> bool:
         if not updated_at:
             return True
         return time.monotonic() - updated_at > SERVICE_STALE_SECONDS
 
+    @staticmethod
+    def _user_state(state: str, message: str) -> tuple[str, str]:
+        """将服务内部状态映射为用户可见的 (icon_key, label)。
+
+        7 种用户可见状态：已认证 / 认证中 / 未认证 / 无可认证网卡 /
+        认证失败 / 服务不可用 / Npcap 未安装。
+        """
+        if state == "authenticated":
+            return ("green", "已认证")
+        if state == "authenticating":
+            return ("blue", "认证中")
+        if state == "failed":
+            # 区分 Npcap 未安装 vs 一般认证失败
+            if "Npcap" in message or "npcap" in message.lower():
+                return ("red", "Npcap 未安装")
+            return ("red", "认证失败")
+        if state == "stopped":
+            return ("red", "服务不可用")
+        # IDLE — 按 message 细分
+        if message in ("已断开", "待命"):
+            return ("gray", "未认证")
+        if message in ("未检测到网线", "未检测到已连接网线", "等待有线网卡"):
+            return ("gray", "无可认证网卡")
+        # 其他 IDLE（重试等待 / 准备认证 / 网卡就绪 等）→ 认证中
+        return ("blue", "认证中")
+
     def _poll_service_status(self) -> None:
         status = read_status()
         stale = self._status_is_stale(status.updated_at)
         if stale and status.state != "stopped":
-            self.set_state("red", "服务无响应")
+            icon_key, label = "red", "服务不可用"
+            self.set_state(icon_key, label)
             if not self._last_stale_state:
                 self.status_window.append_log("服务状态超过 15 秒未更新")
             self._last_stale_state = True
             return
 
         self._last_stale_state = False
-        icon_key = {
-            "authenticated": "green",
-            "authenticating": "orange",
-            "failed": "red",
-            "stopped": "blue",
-            "idle": "blue",
-        }.get(status.state, "blue")
-        # 手动断开（IDLE + message="已断开"）→ 灰色
-        if icon_key == "blue" and status.message == "已断开":
-            icon_key = "gray"
-        message = status.message or status.state
-        self.set_state(icon_key, message)
-        if status.iface or status.ipv4 or status.mac:
-            # 仅更新 status.json 携带的字段，驱动程序/网关/DNS 留给 _refresh_info_panel
-            self.status_window.network_panel.set_value("网卡", status.iface or "-")
-            self.status_window.network_panel.set_value("IPv4", status.ipv4 or "-")
-            self.status_window.network_panel.set_value("MAC", status.mac or "-")
-        if status.state != self._last_service_state:
-            self._last_service_state = status.state
+        icon_key, label = self._user_state(status.state, status.message)
+        self.set_state(icon_key, label)
+
+        # 通知：仅 authenticated ↔ 非authenticated 转换时弹窗
+        prev_user_state = self._last_service_state
+        curr_user_state = "authenticated" if status.state == "authenticated" else "other"
+        if prev_user_state is not None and prev_user_state != curr_user_state:
             if self.config.desktop_notify:
-                self._notify_state(status.state, message)
+                if status.state == "authenticated":
+                    self._notify_state("authenticated", label)
+                elif prev_user_state == "authenticated" and status.state == "failed":
+                    self._notify_state("failed", label)
+        self._last_service_state = curr_user_state
 
-    def _refresh_info_panel(self) -> None:
-        candidates = list_auth_candidate_interfaces()
-        supported = {candidate.name: candidate for candidate in candidates}
-        iface = self.config.iface if self.config.iface in supported else ""
-        if not iface and self.config.iface_mode == "auto":
-            best = pick_best_candidate()
-            iface = best.name if best else ""
-        if not iface:
-            iface_text = (
-                self.config.iface if self.config.iface_mode == "manual" else "自动"
-            )
-            self.status_window.update_info(
-                iface=iface_text,
-                driver="-",
-                ip="-",
-                ipv6="-",
-                mac="-",
-                gateway="-",
-                dns="-",
-            )
-            return
-
-        addrs = psutil.net_if_addrs()
-        mac = "-"
-        ip = "-"
-        ipv6 = "-"
-        gateway = "-"
-        dns = "-"
-        for addr in addrs.get(iface, []):
-            if getattr(addr, "family", None) == psutil.AF_LINK and addr.address:
-                mac = addr.address
-            elif getattr(addr, "family", None) == socket.AF_INET and addr.address:
-                ip = addr.address
-            elif getattr(addr, "family", None) == socket.AF_INET6 and addr.address:
-                ipv6_addr = addr.address.split("%")[0]
-                if not ipv6_addr.startswith("fe80:") or ipv6 == "-":
-                    ipv6 = ipv6_addr
-
-        cached_at, cached_iface, cached_info = _NETINFO_CACHE
-        if (
-            time.monotonic() - cached_at < NETINFO_CACHE_TTL
-            and cached_iface == iface
-            and cached_info is not None
-        ):
-            network_info = cached_info
-        else:
-            network_info = get_interface_network_info(iface)
-            _NETINFO_CACHE[:] = [time.monotonic(), iface, network_info]
-        if network_info.ipv4:
-            ip = network_info.ipv4
-        if network_info.gateway:
-            gateway = network_info.gateway
-        if network_info.dns:
-            dns_values = list(network_info.dns[:2])
-            dns = ", ".join(dns_values)
-            if len(network_info.dns) > len(dns_values):
-                dns += " ..."
-
-        candidate = supported.get(iface)
+        # 状态面板字段：直接读 status.json（服务端权威数据）
         self.status_window.update_info(
-            iface=iface if mac != "-" else "-",
-            driver=(candidate.adapter_description if candidate else "-") or "-",
-            mac=mac,
-            ip=ip,
-            ipv6=ipv6,
-            gateway=gateway,
-            dns=dns,
+            iface=status.iface or "-",
+            driver=status.driver or "-",
+            mac=status.mac or "-",
+            ip=status.ipv4 or "-",
+            ipv6="-",
+            gateway=status.gateway or "-",
+            dns=status.dns or "-",
         )
 
     def show_status(self) -> None:
@@ -448,17 +391,14 @@ class CampusTray:
         self._flush_quick_form()
         write_command("authenticate")
         self.status_window.append_log("已请求服务重新连接")
-        self.set_state("orange", "已请求重新连接")
 
     def logoff(self) -> None:
         self._flush_quick_form()
         write_command("logoff")
-        self.set_state("orange", "已请求断开连接")
         self.status_window.append_log("已请求服务断开连接并停止自动重试/续期")
 
     def _on_quit(self) -> None:
         self._status_poll_timer.stop()
-        self._info_refresh_timer.stop()
         # 非服务模式：GUI 退出时停止服务
         if not self.config.service_mode:
             _stop_service()
@@ -468,7 +408,6 @@ class CampusTray:
 
 def main(
     app: QApplication | None = None,
-    single_instance: object | None = None,
     started_by_startup: bool = False,
 ) -> None:
     try:
@@ -485,10 +424,6 @@ def main(
         app.setWindowIcon(make_window_icon())
 
     tray = CampusTray(app, started_by_startup=started_by_startup)
-
-    # Wire up single-instance IPC: second instance → restore this window
-    if single_instance is not None:
-        single_instance.activate_requested.connect(tray.show_status)
 
     if not QSystemTrayIcon.isSystemTrayAvailable():
         QMessageBox.warning(None, APP_DISPLAY_NAME, "系统托盘不可用")

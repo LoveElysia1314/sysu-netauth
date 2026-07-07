@@ -10,13 +10,6 @@ NPCAP_VERSION = "1.88"
 NPCAP_INSTALLER_URL = f"https://npcap.com/dist/npcap-{NPCAP_VERSION}.exe"
 
 
-def _temp_installer_path() -> str:
-    """返回临时目录中的安装程序路径。"""
-    return os.path.join(
-        os.environ.get("TEMP", os.path.expanduser("~")), f"npcap-{NPCAP_VERSION}.exe"
-    )
-
-
 def has_npcap() -> bool:
     if ctypes.util.find_library("wpcap"):
         return True
@@ -53,7 +46,6 @@ def _check_file_integrity(path: str) -> tuple[bool, str]:
     if not os.path.exists(path):
         return False, "文件不存在"
     size = os.path.getsize(path)
-    # Npcap 1.88 ~1.3 MB，低于 1 MB 肯定不完整
     if size <= 1_000_000:
         return False, f"文件过小（{size:,} bytes），下载可能不完整"
     return True, f"文件大小 {size:,} bytes，通过完整性检查"
@@ -61,7 +53,10 @@ def _check_file_integrity(path: str) -> tuple[bool, str]:
 
 def download_npcap_installer(progress_cb=None) -> tuple[bool, str]:
     """下载 Npcap 安装程序到临时目录。返回 (成功, 路径或错误消息)。"""
-    dest = _temp_installer_path()
+    dest = os.path.join(
+        os.environ.get("TEMP", os.path.expanduser("~")),
+        f"npcap-{NPCAP_VERSION}.exe",
+    )
 
     if os.path.exists(dest):
         ok, msg = _check_file_integrity(dest)
@@ -126,25 +121,5 @@ def launch_npcap_installer(installer_path: str) -> tuple[bool, str]:
         if ret_int == 5:
             err_msg += " 权限不足，请以管理员身份运行本程序。"
         return False, err_msg
-    except Exception:
-        # ── 方案 B: 兜底用 PowerShell Start-Process ──
-        try:
-            import subprocess
-
-            subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    f'Start-Process -Verb RunAs -FilePath "{installer_path}" -WindowStyle Normal',
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            return True, "已通过 PowerShell 启动安装向导（兜底方式）"
-        except Exception as inner_exc:
-            return False, f"所有启动方式均失败。PowerShell 兜底也失败：{inner_exc}"
+    except Exception as exc:
+        return False, f"安装向导启动失败：{exc}"

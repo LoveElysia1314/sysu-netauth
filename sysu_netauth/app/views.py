@@ -203,11 +203,8 @@ class MainWindow(QMainWindow):
 
         body = QHBoxLayout()
         body.setSpacing(12)
+        body.addWidget(self._build_network_panel(), 3)
         body.addWidget(self._build_control_group(), 2)
-        right = QVBoxLayout()
-        right.setSpacing(10)
-        right.addWidget(self._build_network_panel(), 1)
-        body.addLayout(right, 3)
         root.addLayout(body, 1)
         return page
 
@@ -280,11 +277,12 @@ class MainWindow(QMainWindow):
         buttons.setSpacing(8)
         self.auth_btn = QPushButton("重新连接")
         self.logoff_btn = QPushButton("断开连接")
-        self.open_logs_btn = QPushButton("显示日志")
+        self.restart_service_btn = QPushButton("重启服务")
+        self.restart_service_btn.setToolTip("停止并重新启动 Windows 服务")
         self.quit_btn = QPushButton("退出程序")
         buttons.addWidget(self.auth_btn, 0, 0)
         buttons.addWidget(self.logoff_btn, 0, 1)
-        buttons.addWidget(self.open_logs_btn, 1, 0)
+        buttons.addWidget(self.restart_service_btn, 1, 0)
         buttons.addWidget(self.quit_btn, 1, 1)
         layout.addLayout(buttons)
         layout.addStretch(1)

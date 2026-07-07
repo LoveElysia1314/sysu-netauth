@@ -139,12 +139,10 @@ def parse_eapol(raw: bytes) -> EapPacket | None:
 
 def detect_iface_ip(iface: str) -> str | None:
     try:
-        detected_ip = get_if_addr(iface)
-        if detected_ip and detected_ip != "0.0.0.0":
-            return detected_ip
+        ip = get_if_addr(iface)
+        return ip if ip and ip != "0.0.0.0" else None
     except Exception:
         return None
-    return None
 
 
 def authenticate(
@@ -169,7 +167,6 @@ def authenticate(
     try:
         src_mac = get_if_hwaddr(options.iface)
         client_ip = options.client_ip or detect_iface_ip(options.iface)
-        switch_mac = PAE_GROUP
 
         emit(AuthStatus.WAIT_EAP_SERVER, f"iface={options.iface} mac={src_mac}")
         if send_start:

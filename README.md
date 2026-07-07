@@ -17,7 +17,7 @@
 
 ## 架构概览
 
-```
+```text
 系统启动
   └─ SYSUNetAuth Windows 服务 (Session 0)
        ├─ 读取 %ProgramData%\SYSUNetAuth\config.json
@@ -140,7 +140,7 @@ python scripts\build.py --skip-installer  # 仅 EXE
 
 输出：
 
-```
+```text
 dist\sysu_netauth\sysu_netauth.exe       # GUI/CLI 程序
 dist\sysu_netauth\sysu_netauth_service.exe  # 服务程序
 SYSUNetAuth_Setup_v{version}.exe         # 安装包
@@ -173,7 +173,7 @@ Get-Content "$env:ProgramData\SYSUNetAuth\service.log" -Tail 20
 
 ### 常见问题
 
-**服务 RUNNING 但状态 waiting_network**：未检测到物理有线网卡，或网线未连接。
+**状态显示 IDLE 且未自动认证**：检查是否已填写 NetID 和密码，确认 `auto_auth` 为 `true`，网线已插入。
 
 **service.log 为空**：先查看 `service_bootstrap.log`，它记录服务进程是否被 SCM 正常拉起。
 
@@ -188,22 +188,19 @@ Get-Content "$env:ProgramData\SYSUNetAuth\service.log" -Tail 20
 
 路径：`%ProgramData%\SYSUNetAuth\config.json`
 
-| 字段                   | 类型   | 默认值       | 说明                                |
-| ---------------------- | ------ | ------------ | ----------------------------------- |
-| `username`             | string | `""`         | NetID                               |
-| `password`             | string | `""`         | 明文密码                            |
-| `iface`                | string | `""`         | 指定网卡名                          |
-| `iface_mode`           | string | `"auto"`     | `"auto"` 自动 / `"manual"` 手动     |
-| `auto_auth`            | bool   | `true`       | GUI 启动后自动认证                  |
-| `retry_interval`       | int    | `60`         | 失败重试间隔秒数（15–3600）         |
-| `close_behavior`       | string | `"minimize"` | `"minimize"` 最小化 / `"quit"` 退出 |
-| `close_behavior_asked` | bool   | `false`      | 是否已询问过关闭行为                |
-| `service_mode`         | bool   | `true`       | 服务独立运行，退出 GUI 不影响认证   |
-| `launch_gui_on_login`  | bool   | `false`      | 用户登录后启动 GUI                  |
-| `hide_window_on_login` | bool   | `true`       | 仅 --startup 时启动后隐藏窗口       |
-| `desktop_notify`       | bool   | `true`       | 状态变化时弹出桌面通知              |
-| `last_success_iface`   | string | `""`         | 上次成功网卡名（自动缓存）          |
-| `last_success_mac`     | string | `""`         | 上次成功 MAC（自动缓存）            |
+| 字段                   | 类型   | 默认值   | 说明                               |
+| ---------------------- | ------ | -------- | ---------------------------------- |
+| `username`             | string | `""`     | NetID                              |
+| `password`             | string | `""`     | 明文密码                           |
+| `iface`                | string | `""`     | 指定网卡名                         |
+| `iface_mode`           | string | `"auto"` | `"auto"` 自动 / `"manual"` 手动    |
+| `auto_auth`            | bool   | `true`   | 启动后自动认证                     |
+| `retry_interval`       | int    | `60`     | 失败重试间隔秒数（15–3600）        |
+| `service_mode`         | bool   | `true`   | 服务独立运行，退出 GUI 不影响认证  |
+| `launch_gui_on_login`  | bool   | `false`  | 用户登录后启动 GUI                 |
+| `hide_window_on_login` | bool   | `true`   | `--startup` 启动后隐藏窗口         |
+| `desktop_notify`       | bool   | `true`   | 状态变化时弹出桌面通知             |
+| `last_success_mac`     | string | `""`     | 上次成功认证的网卡 MAC（自动缓存） |
 
 > **安全说明**：密码以明文保存。请不要提交配置文件到仓库。
 
@@ -211,11 +208,11 @@ Get-Content "$env:ProgramData\SYSUNetAuth\service.log" -Tail 20
 
 三个 JSON 文件位于 `%ProgramData%\SYSUNetAuth\`，均使用原子写入：
 
-| 文件           | 写入者     | 读取者     | 用途                                              |
-| -------------- | ---------- | ---------- | ------------------------------------------------- |
-| `config.json`  | GUI / 服务 | 服务 / GUI | 账号、密码、网卡、策略                            |
-| `status.json`  | 服务       | GUI / CLI  | 当前认证状态（state/message/iface/ip）            |
-| `command.json` | GUI        | 服务       | 命令：`authenticate` / `logoff` / `reload_config` |
+| 文件           | 写入者     | 读取者     | 用途                                                            |
+| -------------- | ---------- | ---------- | --------------------------------------------------------------- |
+| `config.json`  | GUI / 服务 | 服务 / GUI | 账号、密码、网卡、策略                                          |
+| `status.json`  | 服务       | GUI / CLI  | 当前认证状态（state/message/iface/mac/ipv4/gateway/dns/driver） |
+| `command.json` | GUI        | 服务       | 命令：`authenticate` / `logoff` / `reload_config`               |
 
 ## 相关链接
 

@@ -14,8 +14,6 @@ import win32serviceutil
 from sysu_netauth.core.config import APP_DIR, APP_DISPLAY_NAME, APP_ID
 from sysu_netauth.service.engine import AuthServiceEngine
 
-SERVICE_NAME = APP_ID
-SERVICE_DISPLAY_NAME = APP_DISPLAY_NAME
 SERVICE_DESCRIPTION = "SYSU wired campus network 802.1X authentication service"
 
 
@@ -52,8 +50,8 @@ def setup_logging() -> None:
 
 
 class SYSUNetAuthService(win32serviceutil.ServiceFramework):
-    _svc_name_ = SERVICE_NAME
-    _svc_display_name_ = SERVICE_DISPLAY_NAME
+    _svc_name_ = APP_ID
+    _svc_display_name_ = APP_DISPLAY_NAME
     _svc_description_ = SERVICE_DESCRIPTION
 
     def __init__(self, args: list[str]) -> None:
@@ -96,7 +94,7 @@ def _configure_failure_actions() -> None:
             [
                 "sc.exe",
                 "failure",
-                SERVICE_NAME,
+                APP_ID,
                 "reset=",
                 "86400",
                 "actions=",
