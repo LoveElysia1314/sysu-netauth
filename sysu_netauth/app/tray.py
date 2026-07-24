@@ -1,41 +1,39 @@
 from __future__ import annotations
 
-import os
+import subprocess
 import sys
 import time
 
-import subprocess
-
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QIcon, QPixmap
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
+from sysu_netauth.app.startup import set_gui_launch_on_login
 from sysu_netauth.app.views import MainWindow
+from sysu_netauth.core.assets import resolve_asset_path
 from sysu_netauth.core.config import (
     APP_DISPLAY_NAME,
     APP_ID,
-    CONFIG_PATH,
     AppConfig,
-    save_config,
-    set_gui_launch_on_login,
-)
-from sysu_netauth.core.interfaces import (
-    list_auth_candidate_interfaces,
-)
-from sysu_netauth.core.assets import resolve_asset_path
-from sysu_netauth.core.npcap import has_npcap
-from sysu_netauth.core.config import (
+    UpdateUiState,
     load_config,
+    load_update_state,
+    load_update_ui_state,
     read_status,
+    save_config,
+    save_update_ui_state,
     write_command,
 )
+from sysu_netauth.core.interfaces import list_auth_candidate_interfaces
+from sysu_netauth.core.npcap import has_npcap
+from sysu_netauth.core.update import is_safe_external_url
 
 
-def _service_sc(args: str) -> tuple[bool, str]:
+def _service_sc(*args: str) -> tuple[bool, str]:
     """运行 sc.exe 命令管理 Windows 服务（服务名 SYSUNetAuth）。返回 (成功?, 输出)。"""
     try:
         r = subprocess.run(
-            ["sc", *args.split()],
+            ["sc.exe", *args],
             capture_output=True,
             text=True,
             creationflags=0x08000000,  # CREATE_NO_WINDOW
@@ -46,19 +44,21 @@ def _service_sc(args: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
-def _ensure_service_running() -> None:
-    """尝试启动 Windows 服务。失败时静默处理，GUI 会通过轮询展示"服务无响应"。"""
-    _service_sc(f'start "{APP_ID}"')
+def _ensure_service_running() -> tuple[bool, str]:
+    return _service_sc("start", APP_ID)
 
 
-def _adjust_service_start_type(start_type: str) -> None:
+def _adjust_service_start_type(start_type: str) -> tuple[bool, str]:
     """调整 Windows 服务自启动类型：auto（开机自启）或 demand（手动/GUI 管理）。"""
-    _service_sc(f'config "{APP_ID}" start={start_type}')
+    return _service_sc("config", APP_ID, "start=", start_type)
 
 
-def _stop_service() -> None:
-    """停止 Windows 服务。"""
-    _service_sc(f'stop "{APP_ID}"')
+def _stop_service() -> tuple[bool, str]:
+    return _service_sc("stop", APP_ID)
+
+
+def _is_expected_sc_result(output: str, *codes: int) -> bool:
+    return any(str(code) in output for code in codes)
 
 
 STATUS_POLL_INTERVAL_MS = 2000
@@ -98,6 +98,11 @@ class CampusTray:
         self._last_service_state: str | None = None
         self._last_notify_at: dict[str, float] = {}
         self._last_stale_state = False
+        self._restart_pending = False
+        self._update_ui_state = load_update_ui_state()
+        self._last_update_signature: tuple[object, ...] | None = None
+        self._manual_update_pending = False
+        self._current_release_url = ""
 
         self.icons = {key: make_tray_icon(key) for key in TRAY_STATES}
         self.tray = QSystemTrayIcon(self.icons["blue"])
@@ -112,6 +117,9 @@ class CampusTray:
         self.status_window.quit_btn.clicked.connect(self._on_quit)
         self.status_window.npcap_installed.connect(self._on_npcap_installed)
         self.status_window.advanced_settings_changed.connect(self._on_advanced_changed)
+        self.status_window.check_update_requested.connect(self._request_update_check)
+        self.status_window.view_release_requested.connect(self._open_current_release)
+        self.status_window.ignore_update_requested.connect(self._ignore_current_update)
 
         self.status_window.winId()
         try:
@@ -119,8 +127,9 @@ class CampusTray:
         except Exception as exc:
             self.status_window.append_log(f"配置面板初始化异常: {exc}")
 
-        # 尝试启动 Windows 服务（若未运行）；失败时 GUI 会轮询显示"服务无响应"
-        _ensure_service_running()
+        ok, output = _ensure_service_running()
+        if not ok and not _is_expected_sc_result(output, 1056):
+            self.status_window.append_log(f"服务启动失败：{output or '未知错误'}")
 
         self._status_poll_timer = QTimer()
         self._status_poll_timer.setInterval(STATUS_POLL_INTERVAL_MS)
@@ -204,6 +213,8 @@ class CampusTray:
         menu.addAction("断开连接", self.logoff)
         menu.addSeparator()
         menu.addAction("显示窗口", self.show_status)
+        menu.addAction("检查更新", self._request_update_check)
+        menu.addAction("帮助与资源", self.status_window.show_resources)
         menu.addSeparator()
         menu.addAction("退出程序", self._on_quit)
         return menu
@@ -226,18 +237,28 @@ class CampusTray:
             self.status_window.install_npcap()
 
     def _on_npcap_installed(self) -> None:
-        self.status_window.append_log("Npcap 检测通过，正在重启服务...")
-        # 服务曾在 run() 入口因 has_npcap()==False 直接退出，
-        # 不在主循环中 → 无法响应 command.json。必须完整重启。
-        _service_sc(f'stop "{APP_ID}"')
-        time.sleep(2)
-        _service_sc(f'start "{APP_ID}"')
+        self.status_window.append_log("Npcap 检测通过")
+        self._restart_service()
 
     def _restart_service(self) -> None:
+        if self._restart_pending:
+            return
+        self._restart_pending = True
+        self.status_window.restart_service_btn.setEnabled(False)
         self.status_window.append_log("正在重启服务...")
-        _service_sc(f'stop "{APP_ID}"')
-        time.sleep(2)
-        _service_sc(f'start "{APP_ID}"')
+        ok, output = _stop_service()
+        if not ok and not _is_expected_sc_result(output, 1062):
+            self.status_window.append_log(f"停止服务失败：{output or '未知错误'}")
+        QTimer.singleShot(1500, self._finish_service_restart)
+
+    def _finish_service_restart(self) -> None:
+        ok, output = _ensure_service_running()
+        if ok or _is_expected_sc_result(output, 1056):
+            self.status_window.append_log("服务已启动")
+        else:
+            self.status_window.append_log(f"服务启动失败：{output or '未知错误'}")
+        self._restart_pending = False
+        self.status_window.restart_service_btn.setEnabled(True)
 
     def set_state(self, icon_key: str, message: str) -> None:
         self.tray.setIcon(self.icons[icon_key])
@@ -248,20 +269,30 @@ class CampusTray:
     def _notify_state(self, user_state: str, message: str) -> None:
         now = time.monotonic()
         if user_state == "authenticated":
-            if now - self._last_notify_at.get("authenticated", 0) < NOTIFY_COOLDOWN_AUTHENTICATED:
+            if (
+                now - self._last_notify_at.get("authenticated", 0)
+                < NOTIFY_COOLDOWN_AUTHENTICATED
+            ):
                 return
             self._last_notify_at["authenticated"] = now
-            self.tray.showMessage(APP_DISPLAY_NAME, "校园网已连接", self.icons["green"], 3000)
+            self.tray.showMessage(
+                APP_DISPLAY_NAME, "校园网已连接", self.icons["green"], 3000
+            )
         elif user_state == "failed":
             if now - self._last_notify_at.get("failed", 0) < NOTIFY_COOLDOWN_FAILED:
                 return
             self._last_notify_at["failed"] = now
-            self.tray.showMessage(APP_DISPLAY_NAME, f"认证失败：{message}", self.icons["red"], 5000)
+            self.tray.showMessage(
+                APP_DISPLAY_NAME, f"认证失败：{message}", self.icons["red"], 5000
+            )
 
-    def _status_is_stale(self, updated_at: float) -> bool:
+    @staticmethod
+    def _status_is_stale(updated_at: float) -> bool:
         if not updated_at:
             return True
-        return time.monotonic() - updated_at > SERVICE_STALE_SECONDS
+        age = time.time() - updated_at
+        # 未来时间戳通常表示系统时钟曾被校准；超过容差同样视为无效。
+        return age > SERVICE_STALE_SECONDS or age < -SERVICE_STALE_SECONDS
 
     @staticmethod
     def _user_state(state: str, message: str) -> tuple[str, str]:
@@ -298,6 +329,7 @@ class CampusTray:
             if not self._last_stale_state:
                 self.status_window.append_log("服务状态超过 15 秒未更新")
             self._last_stale_state = True
+            self._poll_update_state()
             return
 
         self._last_stale_state = False
@@ -306,7 +338,9 @@ class CampusTray:
 
         # 通知：仅 authenticated ↔ 非authenticated 转换时弹窗
         prev_user_state = self._last_service_state
-        curr_user_state = "authenticated" if status.state == "authenticated" else "other"
+        curr_user_state = (
+            "authenticated" if status.state == "authenticated" else "other"
+        )
         if prev_user_state is not None and prev_user_state != curr_user_state:
             if self.config.desktop_notify:
                 if status.state == "authenticated":
@@ -325,6 +359,162 @@ class CampusTray:
             gateway=status.gateway or "-",
             dns=status.dns or "-",
         )
+        self._poll_update_state()
+
+    def _request_update_check(self) -> None:
+        status = read_status()
+        if status.state == "stopped" or self._status_is_stale(status.updated_at):
+            QMessageBox.information(
+                self.status_window,
+                APP_DISPLAY_NAME,
+                "后台服务运行后才能检查更新。",
+            )
+            return
+        try:
+            write_command("check_update")
+        except OSError as exc:
+            QMessageBox.warning(
+                self.status_window,
+                APP_DISPLAY_NAME,
+                f"提交更新检查请求失败：{exc}",
+            )
+            return
+        self._manual_update_pending = True
+        self.status_window.set_update_checking()
+        self.status_window.append_log("已请求服务检查更新")
+
+    def _poll_update_state(self) -> None:
+        state = load_update_state()
+        signature = (
+            state.status,
+            state.current_version,
+            state.latest_version,
+            state.available,
+            state.release_url,
+            state.summary,
+            state.checked_at,
+            state.error,
+        )
+        if signature == self._last_update_signature:
+            return
+        self._last_update_signature = signature
+
+        if state.status == "checking":
+            self.status_window.set_update_checking()
+            return
+
+        if state.status == "success":
+            self._current_release_url = state.release_url
+            if state.available and state.latest_version:
+                if self._update_ui_state.ignored_version == state.latest_version:
+                    self.status_window.hide_update_available()
+                    self.status_window.set_update_idle(
+                        f"v{state.latest_version} 已忽略"
+                    )
+                else:
+                    self.status_window.show_update_available(
+                        state.latest_version,
+                        state.summary,
+                    )
+                    self._notify_update_once(state.latest_version)
+                if self._manual_update_pending:
+                    self.status_window.append_log(f"发现新版本 v{state.latest_version}")
+            else:
+                self.status_window.hide_update_available()
+                self.status_window.set_update_idle("已是最新版本")
+                if self._manual_update_pending:
+                    self.status_window.append_log("当前已是最新版本")
+            self._manual_update_pending = False
+            return
+
+        if state.status == "error":
+            self._current_release_url = state.release_url
+            if (
+                state.available
+                and state.latest_version
+                and self._update_ui_state.ignored_version != state.latest_version
+            ):
+                # 临时网络错误不应抹掉上一次已验证的新版本结果。
+                self.status_window.show_update_available(
+                    state.latest_version,
+                    state.summary,
+                )
+                self._notify_update_once(state.latest_version)
+            else:
+                self.status_window.set_update_idle(
+                    "检查失败" if self._manual_update_pending else ""
+                )
+            if self._manual_update_pending:
+                self._manual_update_pending = False
+                message = state.error or "无法获取更新信息"
+                self.status_window.append_log(f"更新检查失败：{message}")
+                QMessageBox.warning(
+                    self.status_window,
+                    APP_DISPLAY_NAME,
+                    f"更新检查失败：{message}",
+                )
+            return
+
+        self.status_window.set_update_idle()
+
+    def _notify_update_once(self, version: str) -> None:
+        if (
+            not self.config.desktop_notify
+            or self._update_ui_state.notified_version == version
+        ):
+            return
+        self.tray.showMessage(
+            APP_DISPLAY_NAME,
+            f"发现新版本 v{version}，可在主窗口查看。",
+            self.icons["blue"],
+            6000,
+        )
+        self._update_ui_state = UpdateUiState(
+            notified_version=version,
+            ignored_version=self._update_ui_state.ignored_version,
+        )
+        try:
+            save_update_ui_state(self._update_ui_state)
+        except OSError as exc:
+            self.status_window.append_log(f"保存更新提示状态失败：{exc}")
+
+    def _ignore_current_update(self) -> None:
+        state = load_update_state()
+        if not state.available or not state.latest_version:
+            return
+        self._update_ui_state = UpdateUiState(
+            notified_version=self._update_ui_state.notified_version,
+            ignored_version=state.latest_version,
+        )
+        try:
+            save_update_ui_state(self._update_ui_state)
+        except OSError as exc:
+            QMessageBox.warning(
+                self.status_window,
+                APP_DISPLAY_NAME,
+                f"保存忽略设置失败：{exc}",
+            )
+            return
+        self.status_window.hide_update_available()
+        self.status_window.set_update_idle(f"v{state.latest_version} 已忽略")
+
+    def _open_current_release(self) -> None:
+        if not is_safe_external_url(
+            self._current_release_url,
+            allowed_hosts={"gitee.com", "github.com"},
+        ):
+            QMessageBox.warning(
+                self.status_window,
+                APP_DISPLAY_NAME,
+                "更新页面地址无效或不受信任。",
+            )
+            return
+        if not QDesktopServices.openUrl(QUrl(self._current_release_url)):
+            QMessageBox.warning(
+                self.status_window,
+                APP_DISPLAY_NAME,
+                "无法打开系统默认浏览器。",
+            )
 
     def show_status(self) -> None:
         self.status_window.setWindowState(
@@ -349,8 +539,9 @@ class CampusTray:
 
     def _flush_quick_form(self) -> None:
         """快速保存表单（不重新填充，避免阻塞主线程）。"""
-        self.config = self.status_window.collect_behavior_config(self.config)
-        save_config(self.config)
+        new_config = self.status_window.collect_behavior_config(self.config)
+        save_config(new_config)
+        self.config = new_config
 
     def _on_advanced_changed(self) -> None:
         new_config = self.status_window.collect_behavior_config(self.config)
@@ -359,49 +550,70 @@ class CampusTray:
     def _apply_config_change(self, new_config: AppConfig) -> None:
         old_service_mode = self.config.service_mode
         old_launch_gui = self.config.launch_gui_on_login
+        launch_changed = new_config.launch_gui_on_login != old_launch_gui
+        if launch_changed:
+            try:
+                set_gui_launch_on_login(new_config.launch_gui_on_login)
+            except Exception as exc:
+                self.status_window.load_advanced_config(self.config)
+                QMessageBox.warning(None, APP_DISPLAY_NAME, str(exc))
+                return
+        try:
+            save_config(new_config)
+        except OSError as exc:
+            if launch_changed:
+                try:
+                    set_gui_launch_on_login(old_launch_gui)
+                except Exception:
+                    pass
+            self.status_window.load_advanced_config(self.config)
+            QMessageBox.warning(None, APP_DISPLAY_NAME, f"保存配置失败：{exc}")
+            return
         self.config = new_config
-        save_config(self.config)
 
-        # 服务模式切换 → 调整 Windows 服务自启动类型（轻量 sc.exe）
         if new_config.service_mode != old_service_mode:
             if new_config.service_mode:
-                _adjust_service_start_type("auto")
+                ok, output = _adjust_service_start_type("auto")
             else:
-                _adjust_service_start_type("demand")
-                _ensure_service_running()
+                ok, output = _adjust_service_start_type("demand")
+                if ok:
+                    _ensure_service_running()
+            if not ok:
+                self.status_window.append_log(
+                    f"调整服务启动类型失败：{output or '未知错误'}"
+                )
 
-        # 开机启动快捷方式（win32com COM 调用可能较慢，异步执行）
-        if new_config.launch_gui_on_login != old_launch_gui:
-            QTimer.singleShot(0, lambda: self._apply_launch_on_login())
-
-        # 通知服务重载配置 + 状态轮询
-        write_command("reload_config")
-        self._poll_service_status()
-        # 延迟刷新网络信息面板，避免阻塞主线程
-        QTimer.singleShot(0, self._refresh_info_panel)
-
-    def _apply_launch_on_login(self) -> None:
-        """单独执行的异步任务：创建/删除开机自启快捷方式。"""
         try:
-            set_gui_launch_on_login(self.config.launch_gui_on_login)
-        except Exception as exc:
-            QMessageBox.warning(None, APP_DISPLAY_NAME, str(exc))
+            write_command("reload_config")
+        except OSError as exc:
+            self.status_window.append_log(f"通知服务重载配置失败：{exc}")
+        self._poll_service_status()
 
     def _on_user_authenticate(self) -> None:
-        self._flush_quick_form()
-        write_command("authenticate")
+        try:
+            self._flush_quick_form()
+            write_command("authenticate")
+        except OSError as exc:
+            QMessageBox.warning(None, APP_DISPLAY_NAME, f"提交认证请求失败：{exc}")
+            return
         self.status_window.append_log("已请求服务重新连接")
 
     def logoff(self) -> None:
-        self._flush_quick_form()
-        write_command("logoff")
+        try:
+            self._flush_quick_form()
+            write_command("logoff")
+        except OSError as exc:
+            QMessageBox.warning(None, APP_DISPLAY_NAME, f"提交断开请求失败：{exc}")
+            return
         self.status_window.append_log("已请求服务断开连接并停止自动重试/续期")
 
     def _on_quit(self) -> None:
         self._status_poll_timer.stop()
         # 非服务模式：GUI 退出时停止服务
         if not self.config.service_mode:
-            _stop_service()
+            ok, output = _stop_service()
+            if not ok and not _is_expected_sc_result(output, 1062):
+                self.status_window.append_log(f"停止服务失败：{output or '未知错误'}")
         self.app.quit()
         sys.exit(0)
 
@@ -423,7 +635,7 @@ def main(
         app.setQuitOnLastWindowClosed(False)
         app.setWindowIcon(make_window_icon())
 
-    tray = CampusTray(app, started_by_startup=started_by_startup)
+    _tray = CampusTray(app, started_by_startup=started_by_startup)
 
     if not QSystemTrayIcon.isSystemTrayAvailable():
         QMessageBox.warning(None, APP_DISPLAY_NAME, "系统托盘不可用")

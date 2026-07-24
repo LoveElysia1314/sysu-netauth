@@ -40,7 +40,9 @@ VersionInfoDescription=SYSU 802.1X/EAPOL 认证客户端
 OutputBaseFilename=@APP_ID@_Setup_v@APP_VERSION@
 Compression=lzma2/max
 SolidCompression=yes
+; 安装程序始终请求管理员权限；不允许降级为当前用户安装。
 PrivilegesRequired=admin
+PrivilegesRequiredOverridesAllowed=
 ArchitecturesInstallIn64BitMode=x64os
 ArchitecturesAllowed=x64compatible
 WizardStyle=modern
@@ -48,8 +50,9 @@ SetupLogging=yes
 SetupIconFile=..\sysu_netauth\assets\icon-ethernet.ico
 ChangesEnvironment=yes
 UninstallDisplayIcon={app}\{#MyAppIconName}
-; 本项目自行静默停止服务和 GUI，避免 Inno Restart Manager 弹出占用文件询问页。
-CloseApplications=no
+; 手动停止已知进程，并启用 Restart Manager 兜底处理跨会话进程和短暂文件占用。
+CloseApplications=force
+CloseApplicationsFilter=*.exe,*.dll,*.pyd
 RestartApplications=no
 DisableProgramGroupPage=yes
 
@@ -57,11 +60,20 @@ DisableProgramGroupPage=yes
 Name: "chinesesimplified"; MessagesFile: "Languages/ChineseSimplified.isl"
 
 [Files]
-Source: "@APP_DIR_RELATIVE@\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 主 GUI 若仍被短暂占用，允许 Windows 在重启时完成替换，避免 MoveFile code 5
+; 直接中断安装。服务 EXE 仍要求安装前完全停止，不使用延迟替换。
+Source: "@APP_DIR_RELATIVE@\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "@APP_DIR_RELATIVE@\*"; DestDir: "{app}"; Excludes: "{#MyAppExeName}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\sysu_netauth\assets\icon-ethernet.ico"; DestDir: "{app}"; DestName: "{#MyAppIconName}"; Flags: ignoreversion
 
 [Dirs]
-Name: "{commonappdata}\{#MyAppId}"; Permissions: users-modify
+Name: "{app}"; Permissions: admins-full system-full users-readexec
+Name: "{commonappdata}\{#MyAppId}"; Permissions: admins-full system-full
+
+[Registry]
+; 除 EXE 自带 requireAdministrator 清单外，再设置 Windows 兼容层的
+; “以管理员身份运行此程序”，兼容旧快捷方式及升级残留。
+Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers"; ValueType: string; ValueName: "{app}\{#MyAppExeName}"; ValueData: "~ RUNASADMIN"; Flags: uninsdeletevalue
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppIconName}"; AppUserModelID: "{#MyAppUserModelId}"
@@ -69,7 +81,9 @@ Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppIconName}"; AppUserModelID: "{#MyAppUserModelId}"
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; postinstall 默认使用提权前的用户令牌；显式 runascurrentuser 才会继承
+; Setup 的管理员令牌，从而有权访问仅管理员可读的 ProgramData 配置。
+Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent runascurrentuser
 
 [Code]
 
@@ -129,10 +143,28 @@ begin
   end;
 end;
 
-function InitializeSetup: Boolean;
-var
-  ResultCode: Integer;
+function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  // 在 Inno 检查占用文件之前先停止服务和已知 GUI；随后 Restart Manager
+  // 再扫描 [Files] 的实际目标，覆盖跨会话或短暂占用场景。
+  StopManagedProcesses;
+  Result := '';
+end;
+
+function InitializeSetup: Boolean;
+begin
+  if not IsAdminInstallMode then
+  begin
+    SuppressibleMsgBox(
+      '安装程序必须以管理员身份运行。',
+      mbCriticalError,
+      MB_OK,
+      IDOK
+    );
+    Result := False;
+    Exit;
+  end;
+
   ExistingInstallDirExists := RegQueryStringValue(
     HKLM,
     'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#MyAppId}_is1',
@@ -276,20 +308,52 @@ begin
     Log('Windows 服务启动失败或已在运行（错误码: ' + IntToStr(ResultCode) + '）');
 end;
 
+procedure ClearPendingCommands;
+begin
+  DeleteFile(ExpandConstant('{commonappdata}\{#MyAppId}\command.json'));
+  DelTree(
+    ExpandConstant('{commonappdata}\{#MyAppId}\commands'),
+    True,
+    True,
+    True
+  );
+end;
+
+procedure HardenDataDirectory;
+var
+  ResultCode: Integer;
+  DataDir: string;
+begin
+  DataDir := ExpandConstant('{commonappdata}\{#MyAppId}');
+  // 移除旧版本遗留的 Users 权限，仅保留 SYSTEM 与管理员完全控制。
+  Exec(
+    'icacls.exe',
+    '"' + DataDir + '" /inheritance:r /remove:g *S-1-5-32-545',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  );
+  Exec(
+    'icacls.exe',
+    '"' + DataDir + '" /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  );
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   NpcapMsg: string;
 begin
-  if CurStep = ssInstall then
-  begin
-    // 用户已点击安装 → 此时关闭旧版本进程/服务，准备覆盖文件
-    StopManagedProcesses;
-  end;
-
   if CurStep = ssPostInstall then
   begin
     AddToPath(ExpandConstant('{app}'));
 
+    HardenDataDirectory;
+    ClearPendingCommands;
     InstallAuthService;
 
     // Npcap 未安装 → 弹窗提示用户
@@ -325,15 +389,17 @@ begin
 
         // 清理 Windows 认证服务
         RemoveServiceIfExists;
+        ClearPendingCommands;
 
         // 清理可能的开机自启残留
         RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', '{#MyAppId}');
         DeleteFile(ExpandConstant('{userstartup}\{#MyAppName}.lnk'));
+        Exec('schtasks.exe', '/Delete /TN "{#MyAppId} GUI" /F', '', SW_HIDE, ewWaitUntilTerminated, choice);
 
-        // 清理原子写入残留的 .json.tmp 临时文件（程序崩溃可能产生）
-        Exec('cmd.exe', '/c del /q "' + ExpandConstant('{commonappdata}\{#MyAppId}') + '\*.json.tmp" 2>nul', '', SW_HIDE, ewWaitUntilTerminated, choice);
-        Exec('cmd.exe', '/c del /q "' + ExpandConstant('{userappdata}\{#MyAppId}') + '\*.json.tmp" 2>nul', '', SW_HIDE, ewWaitUntilTerminated, choice);
-        Exec('cmd.exe', '/c del /q "' + ExpandConstant('{userappdata}\CampusNetAuth') + '\*.json.tmp" 2>nul', '', SW_HIDE, ewWaitUntilTerminated, choice);
+        // 同时兼容旧版 config.json.tmp 与新版 config.json.<随机值>.tmp。
+        Exec('cmd.exe', '/c del /q "' + ExpandConstant('{commonappdata}\{#MyAppId}') + '\*.json.tmp" "' + ExpandConstant('{commonappdata}\{#MyAppId}') + '\*.json.*.tmp" 2>nul', '', SW_HIDE, ewWaitUntilTerminated, choice);
+        Exec('cmd.exe', '/c del /q "' + ExpandConstant('{userappdata}\{#MyAppId}') + '\*.json.tmp" "' + ExpandConstant('{userappdata}\{#MyAppId}') + '\*.json.*.tmp" 2>nul', '', SW_HIDE, ewWaitUntilTerminated, choice);
+        Exec('cmd.exe', '/c del /q "' + ExpandConstant('{userappdata}\CampusNetAuth') + '\*.json.tmp" "' + ExpandConstant('{userappdata}\CampusNetAuth') + '\*.json.*.tmp" 2>nul', '', SW_HIDE, ewWaitUntilTerminated, choice);
 
         // 询问删除用户配置数据
         appDataPath := ExpandConstant('{userappdata}');

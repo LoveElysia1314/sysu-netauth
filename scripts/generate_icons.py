@@ -1,8 +1,12 @@
 """Generate pre-colored tray icons (blue/gray/orange/green/red)."""
 
 from __future__ import annotations
-import io, struct, sys
+
+import io
+import struct
+import sys
 from pathlib import Path
+
 from PIL import Image
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, Qt
 from PySide6.QtGui import QPixmap, QPainter, QGuiApplication
@@ -51,7 +55,7 @@ def _write_ico(imgs: list[Image.Image], path: Path) -> None:
         pngs.append(b.getvalue())
     off = 6 + 16 * n
     ents = b""
-    for s, p in zip(ICON_SIZES, pngs):
+    for s, p in zip(ICON_SIZES, pngs, strict=True):
         w = 0 if s >= 256 else s
         ents += struct.pack("<BBBBHHII", w, w, 0, 0, 1, 32, len(p), off)
         off += len(p)

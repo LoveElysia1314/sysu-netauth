@@ -12,9 +12,11 @@ from scapy.all import get_if_hwaddr, sendp, sniff
 
 from sysu_netauth.core.config import (
     AppConfig,
+    ServiceCache,
     load_config,
+    load_service_cache,
     read_command,
-    save_config,
+    save_service_cache,
     update_status,
     utc_now_iso,
 )
@@ -37,6 +39,7 @@ from sysu_netauth.core.interfaces import (
     pick_best_candidate,
 )
 from sysu_netauth.core.npcap import has_npcap
+from sysu_netauth.service.update_checker import UpdateChecker
 
 MAX_RETRIES = 5
 AUTH_TIMEOUT_SECONDS = 10
@@ -45,6 +48,7 @@ CONFIG_RELOAD_INTERVAL = 3.0
 STARTUP_GRACE_SECONDS = 60.0
 STARTUP_RETRY_INTERVALS = (3, 5, 8, 13, 21)
 RENEW_GRACE_SECONDS = 30.0
+UPDATE_DUE_POLL_INTERVAL = 60.0
 
 
 class ServiceState(str, Enum):
@@ -156,12 +160,29 @@ class AuthServiceEngine:
     def __init__(self, stop_event: threading.Event | None = None) -> None:
         self.stop_event = stop_event or threading.Event()
         self.logger = logging.getLogger("sysu_netauth.service")
-        self.config: AppConfig = load_config()
+        self._startup_config_pending = False
+        try:
+            self.config: AppConfig = load_config()
+        except OSError as exc:
+            self.logger.warning(
+                "failed to load config during startup; using defaults: %s", exc
+            )
+            self.config = AppConfig()
+            self._startup_config_pending = True
+        self.cache = load_service_cache()
+        if not self.cache.iface and self.config.iface_mode == "auto":
+            # 从 v0.6.1 及更早版本的一体化配置迁移运行时缓存。
+            self.cache = ServiceCache(
+                iface=self.config.iface,
+                last_success_mac=self.config.last_success_mac,
+            )
+        self._service_started = False
         self.state = ServiceState.IDLE
         self._status_message = ""
         self._ni: dict[str, str] = {}  # iface/mac/ipv4/gateway/dns/driver
         self._lock = threading.RLock()
         self._auth_thread: threading.Thread | None = None
+        self._auth_generation = 0
         self._auth_candidate_queue: list[str] = []
         self._prev_iface_up: bool | None = None
         self._prev_media: bool | None = None
@@ -173,11 +194,13 @@ class AuthServiceEngine:
         self._renew_failure_event = threading.Event()
         self._authenticated_at: str | None = None
         self._manual_disconnect = False
+        self._update_checker = UpdateChecker(self.stop_event, self.logger)
         # 周期性任务 (interval, next_run, callback)
         self._timers: list[list] = [
             [CONFIG_RELOAD_INTERVAL, 0.0, self.reload_config],
             [IFACE_WATCH_INTERVAL, 0.0, self._check_iface_status],
             [IFACE_WATCH_INTERVAL, 0.0, self._heartbeat],
+            [UPDATE_DUE_POLL_INTERVAL, 0.0, self._maybe_check_for_update],
         ]
 
     @property
@@ -186,8 +209,14 @@ class AuthServiceEngine:
 
     def run(self) -> None:
         self.logger.info("service engine starting")
+        self._service_started = True
+        # 使用 Windows 路由表选择任意可用网络（例如无线网），
+        # 更新调度不依赖有线 802.1X 的认证状态。
+        self._update_checker.ensure_initial_delay()
         if not has_npcap():
             self._set_status(ServiceState.FAILED, "Npcap 未安装")
+        elif self._startup_config_pending:
+            self._set_status(ServiceState.IDLE, "等待加载配置")
         else:
             self._schedule_startup_auth()
 
@@ -212,6 +241,7 @@ class AuthServiceEngine:
                 self._do_retry()
             self.stop_event.wait(1)
 
+        self._service_started = False
         self.shutdown()
 
     def _heartbeat(self) -> None:
@@ -222,16 +252,84 @@ class AuthServiceEngine:
         self.logger.info("service engine stopping")
         self._cancel_retry()
         self._cancel_renew()
+        self._invalidate_auth_attempts()
+        self._update_checker.shutdown()
         if self._auth_thread:
-            self._auth_stop.set()
             thread = self._auth_thread
             if thread.is_alive():
                 thread.join(timeout=4)
         self._set_status(ServiceState.STOPPED, "服务已停止")
 
-    def reload_config(self) -> None:
+    def reload_config(self) -> bool:
+        resume_startup = False
+        old_config = self.config
         with self._lock:
-            self.config = load_config()
+            try:
+                new_config = load_config()
+            except OSError as exc:
+                # 配置文件被安全软件或 GUI 短暂占用时保留内存中的有效配置，
+                # 避免一次非关键 I/O 故障终止整个 Windows 服务。
+                self.logger.warning(
+                    "failed to reload config; keeping current config: %s", exc
+                )
+                return False
+            self.config = new_config
+            resume_startup = self._startup_config_pending and self._service_started
+            self._startup_config_pending = False
+        if resume_startup:
+            if has_npcap():
+                self.logger.info("configuration became available; resuming startup")
+                self._schedule_startup_auth()
+            return True
+
+        if old_config.auto_auth and not new_config.auto_auth:
+            self._cancel_retry()
+            if not self.authenticated:
+                self._set_status(ServiceState.IDLE, "待命")
+            return True
+
+        auth_fields_changed = any(
+            getattr(old_config, name) != getattr(new_config, name)
+            for name in ("username", "password", "iface", "iface_mode", "auto_auth")
+        )
+        if (
+            self._service_started
+            and auth_fields_changed
+            and new_config.auto_auth
+            and not self.authenticated
+            and not self._manual_disconnect
+        ):
+            self.logger.info("authentication settings changed; starting authentication")
+            self._start_auth_flow(manual=False, force=True)
+        return True
+
+    def _save_cache_safely(
+        self,
+        *,
+        iface: str | None = None,
+        last_success_mac: str | None = None,
+    ) -> None:
+        changes: dict[str, str] = {}
+        if iface is not None:
+            changes["iface"] = iface
+        if last_success_mac is not None:
+            changes["last_success_mac"] = last_success_mac
+        self.cache = replace(self.cache, **changes)
+        try:
+            save_service_cache(self.cache)
+        except OSError as exc:
+            self.logger.warning("failed to save service cache: %s", exc)
+
+    def _current_iface(self) -> str:
+        if self.config.iface_mode == "manual":
+            return self.config.iface
+        return self.cache.iface
+
+    def _invalidate_auth_attempts(self) -> None:
+        self._auth_generation += 1
+        auth_stop = getattr(self, "_auth_stop", None)
+        if auth_stop is not None:
+            auth_stop.set()
 
     def _handle_command(self) -> None:
         action = read_command()
@@ -248,8 +346,15 @@ class AuthServiceEngine:
             self.logoff()
         elif action == "reload_config":
             self.reload_config()
+        elif action == "check_update":
+            if not self._update_checker.request_check(force=True):
+                self.logger.info("update check already running or cooling down")
         else:
             self.logger.warning("unknown command ignored: %s", action)
+
+    def _maybe_check_for_update(self) -> None:
+        """按持久化频率调度更新；请求可使用任意可用网络。"""
+        self._update_checker.request_check()
 
     def _set_status(
         self,
@@ -285,7 +390,7 @@ class AuthServiceEngine:
             update_status(
                 state.value,
                 message,
-                iface=self._ni.get("iface", "") or self.config.iface,
+                iface=self._ni.get("iface", "") or self._current_iface(),
                 mac=self._ni.get("mac", ""),
                 ipv4=self._ni.get("ipv4", ""),
                 gateway=self._ni.get("gateway", ""),
@@ -326,10 +431,12 @@ class AuthServiceEngine:
 
     def _resolve_saved_iface(self) -> str | None:
         supported = {candidate.name for candidate in list_auth_candidate_interfaces()}
-        if self.config.iface and self.config.iface in supported:
-            return self.config.iface
-        if self.config.last_success_mac:
-            matched = find_iface_by_mac(self.config.last_success_mac)
+        saved_iface = self._current_iface()
+        if saved_iface and saved_iface in supported:
+            return saved_iface
+        saved_mac = self.cache.last_success_mac or self.config.last_success_mac
+        if saved_mac:
+            matched = find_iface_by_mac(saved_mac)
             if matched:
                 return matched.name
         return None
@@ -343,10 +450,11 @@ class AuthServiceEngine:
             if name and name in by_name and name not in ordered:
                 ordered.append(name)
 
-        if self.config.last_success_mac:
-            matched = find_iface_by_mac(self.config.last_success_mac)
+        saved_mac = self.cache.last_success_mac or self.config.last_success_mac
+        if saved_mac:
+            matched = find_iface_by_mac(saved_mac)
             add(matched.name if matched else None)
-        add(self.config.iface)
+        add(self.cache.iface)
         for candidate in candidates:
             add(candidate.name)
         return ordered
@@ -379,6 +487,7 @@ class AuthServiceEngine:
         if self.config.iface_mode == "manual" and not self.config.iface:
             self._set_status(ServiceState.FAILED, "请先选择网卡")
             return
+        self._invalidate_auth_attempts()
         self._auth_candidate_queue = self._auth_candidates()
         if not self._auth_candidate_queue:
             if not self._has_any_media():
@@ -410,7 +519,7 @@ class AuthServiceEngine:
             )
         self._auth_thread = threading.Thread(
             target=self._run_authentication,
-            args=(iface, self._auth_stop),
+            args=(iface, self._auth_stop, self._auth_generation),
             name=f"AuthWorker-{iface}",
             daemon=True,
         )
@@ -420,6 +529,7 @@ class AuthServiceEngine:
         self,
         iface: str,
         auth_stop: threading.Event,
+        generation: int,
     ) -> None:
         try:
             result = authenticate(
@@ -434,10 +544,15 @@ class AuthServiceEngine:
             )
         except Exception as exc:
             result = AuthResult(AuthStatus.AUTH_FAILED, str(exc), iface)
-        self._on_auth_finished(result)
+        self._on_auth_finished(result, generation)
 
-    def _on_auth_finished(self, result: AuthResult) -> None:
-        if self.stop_event.is_set() or self.state == ServiceState.STOPPED:
+    def _on_auth_finished(self, result: AuthResult, generation: int) -> None:
+        if (
+            generation != self._auth_generation
+            or self.stop_event.is_set()
+            or self.state == ServiceState.STOPPED
+        ):
+            self.logger.info("discarding stale authentication result")
             return
         if self._manual_disconnect:
             self._authenticated_at = None
@@ -460,7 +575,7 @@ class AuthServiceEngine:
                 )
             threading.Thread(
                 target=self._verify_connectivity,
-                args=(result,),
+                args=(result, generation),
                 daemon=True,
             ).start()
             return
@@ -499,15 +614,19 @@ class AuthServiceEngine:
             pass
         return False
 
-    def _verify_connectivity(self, result: AuthResult) -> None:
+    def _verify_connectivity(self, result: AuthResult, generation: int) -> None:
         """后台线程：验证外网连通性。成功后设 AUTHENTICATED 并启动续期监听。"""
         ip = result.ip or ""
         self.stop_event.wait(5)
         for attempt in range(3):
-            if self.stop_event.is_set():
+            if (
+                generation != self._auth_generation
+                or self.stop_event.is_set()
+                or self._manual_disconnect
+            ):
                 return
             if self._ping_ok():
-                self._on_connectivity_result(True, result)
+                self._on_connectivity_result(True, result, generation)
                 return
             self.logger.warning(
                 "connectivity check #%d failed on %s / %s",
@@ -518,17 +637,25 @@ class AuthServiceEngine:
             if attempt < 2:
                 self.stop_event.wait(10)
         self.logger.warning("connectivity check exhausted on %s / %s", result.iface, ip)
-        self._on_connectivity_result(False, result)
+        self._on_connectivity_result(False, result, generation)
 
-    def _on_connectivity_result(self, success: bool, result: AuthResult) -> None:
+    def _on_connectivity_result(
+        self,
+        success: bool,
+        result: AuthResult,
+        generation: int,
+    ) -> None:
         with self._lock:
+            if generation != self._auth_generation or self._manual_disconnect:
+                self.logger.info("discarding stale connectivity result")
+                return
             if success:
                 self._authenticated_at = utc_now_iso()
                 self.logger.info(
                     "connectivity OK on %s / %s", result.iface, result.ip or ""
                 )
                 # 每次重新认证后刷新完整网络信息（含网关/DNS/驱动描述）
-                iface = result.iface or self.config.iface
+                iface = result.iface or self._current_iface()
                 net_info = get_interface_network_info(iface) if iface else None
                 # 驱动描述从 _adapter_metadata 获取
                 _driver = ""
@@ -545,7 +672,7 @@ class AuthServiceEngine:
                         if net_info and net_info.ipv4
                         else (result.ip or "")
                     ),
-                    gateway=net_info.gateway if net_info else "",
+                    gateway=(net_info.gateway or "") if net_info else "",
                     dns=(
                         ", ".join(net_info.dns[:2]) if net_info and net_info.dns else ""
                     ),
@@ -560,17 +687,12 @@ class AuthServiceEngine:
                 self._next_retry_at = time.monotonic() + self.config.retry_interval
 
     def _save_success_iface(self, result: AuthResult) -> None:
-        iface = result.iface or self.config.iface
+        iface = result.iface or self._current_iface()
         if not iface:
             return
         try:
             mac = result.mac or get_if_hwaddr(iface)
-            self.config = replace(
-                self.config,
-                iface=iface,
-                last_success_mac=mac,
-            )
-            save_config(self.config)
+            self._save_cache_safely(iface=iface, last_success_mac=mac)
         except Exception as exc:
             self.logger.warning("failed to save success iface: %s", exc)
 
@@ -616,7 +738,7 @@ class AuthServiceEngine:
 
     def _schedule_renew(self) -> None:
         self._cancel_renew()
-        iface = self.config.iface
+        iface = self._current_iface()
         if not iface:
             return
         self._renew_stop = threading.Event()
@@ -656,6 +778,7 @@ class AuthServiceEngine:
             else:
                 self._cancel_renew()
                 self._cancel_retry()
+                self._invalidate_auth_attempts()
                 self._authenticated_at = None
                 self._set_status(ServiceState.IDLE, "未检测到网线")
                 self.logger.info("all physical media gone — idling")
@@ -670,12 +793,11 @@ class AuthServiceEngine:
             return
 
         # ── Phase 3: Original interface up/down edge detection ──
-        iface = self.config.iface
+        iface = self._current_iface()
         if not iface:
             best = pick_best_candidate()
             if best and best.is_up:
-                self.config = replace(self.config, iface=best.name)
-                save_config(self.config)
+                self._save_cache_safely(iface=best.name)
                 iface = best.name
                 if self.config.auto_auth and not self._manual_disconnect:
                     self._start_auth_flow(manual=False)
@@ -688,11 +810,10 @@ class AuthServiceEngine:
         stats = psutil.net_if_stats()
         if iface in stats:
             current_up = stats[iface].isup
-        elif self.config.last_success_mac:
-            matched = find_iface_by_mac(self.config.last_success_mac)
+        elif self.cache.last_success_mac:
+            matched = find_iface_by_mac(self.cache.last_success_mac)
             if matched:
-                self.config = replace(self.config, iface=matched.name)
-                save_config(self.config)
+                self._save_cache_safely(iface=matched.name)
                 current_up = matched.is_up
             else:
                 current_up = False
@@ -722,15 +843,11 @@ class AuthServiceEngine:
             self._authenticated_at = None
             self._set_status(ServiceState.IDLE, "网卡已断开")
             self._cancel_renew()
+            self._invalidate_auth_attempts()
             if self.config.auto_auth and not self._manual_disconnect:
                 failover = pick_best_candidate()
                 if failover and failover.is_up and failover.name != iface:
-                    self.config = replace(
-                        self.config,
-                        iface=failover.name,
-                        iface_mode="auto",
-                    )
-                    save_config(self.config)
+                    self._save_cache_safely(iface=failover.name)
                     current_up = True
                     self._retry_count = 0
                     self._start_auth_flow(manual=False)
@@ -738,7 +855,7 @@ class AuthServiceEngine:
         self._prev_iface_up = current_up
 
     def _set_authenticated_status(self) -> None:
-        iface = self.config.iface
+        iface = self._current_iface()
         mac = ""
         ipv4 = ""
         gateway = ""
@@ -766,12 +883,12 @@ class AuthServiceEngine:
         self._manual_disconnect = True
         self._cancel_retry()
         self._cancel_renew()
+        self._invalidate_auth_attempts()
         if self._auth_thread:
-            self._auth_stop.set()
             thread = self._auth_thread
             if thread.is_alive():
                 thread.join(timeout=4)
-        iface = self.config.iface or self._resolve_saved_iface()
+        iface = self._current_iface() or self._resolve_saved_iface()
         if not iface:
             self._authenticated_at = None
             self._set_status(ServiceState.IDLE, "已断开")

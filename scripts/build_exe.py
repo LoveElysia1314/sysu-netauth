@@ -249,6 +249,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    uac_admin=True,
 )
 
 service_a = Analysis(
@@ -295,6 +296,7 @@ service_exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    uac_admin=True,
 )
 {collect}"""
 
@@ -325,7 +327,7 @@ def main() -> None:
 
     # ── 哈希缓存检查（--force 跳过） ──
     if not args.force and not args.clean and _is_build_cached(outdir_path):
-        print(f"[CACHE] 源码、资源、依赖均未变动，跳过打包（使用已有缓存）")
+        print("[CACHE] 源码、资源、依赖均未变动，跳过打包（使用已有缓存）")
         print(f"[CACHE] 输出: {outdir_path}")
         return
 
@@ -353,7 +355,7 @@ def main() -> None:
         "--workpath",
         str(PROJECT_ROOT / "build"),
     ]
-    print(f"[BUILD] 正在打包...")
+    print("[BUILD] 正在打包...")
     PyInstaller.__main__.run(cmd)
     _save_build_hash()
     print(f"[OK] 打包完成: {outdir_path}")

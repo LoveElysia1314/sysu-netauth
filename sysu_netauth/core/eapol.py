@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable
 
-from scapy.all import Ether, conf, get_if_addr, get_if_hwaddr, sendp, sniff
+from scapy.all import get_if_addr, get_if_hwaddr, sendp, sniff
+from scapy.config import conf
+from scapy.layers.l2 import Ether
+from scapy.packet import Packet
 
 from .npcap import explain_npcap_requirement, has_npcap
 
@@ -85,17 +88,17 @@ def md5_challenge_response(identifier: int, password: str, challenge: bytes) -> 
     ).digest()
 
 
-def build_start(src_mac: str, dst_mac: str = PAE_GROUP) -> Ether:
+def build_start(src_mac: str, dst_mac: str = PAE_GROUP) -> Packet:
     return Ether(dst=dst_mac, src=src_mac, type=EAPOL_TYPE) / eapol_header(EAPOL_START)
 
 
-def build_logoff(src_mac: str, dst_mac: str = PAE_GROUP) -> Ether:
+def build_logoff(src_mac: str, dst_mac: str = PAE_GROUP) -> Packet:
     return Ether(dst=dst_mac, src=src_mac, type=EAPOL_TYPE) / eapol_header(EAPOL_LOGOFF)
 
 
 def build_identity_response(
     src_mac: str, dst_mac: str, identifier: int, username: str
-) -> Ether:
+) -> Packet:
     payload = eap_packet(EAP_RESPONSE, identifier, EAP_IDENTITY, username.encode("gbk"))
     return Ether(dst=dst_mac, src=src_mac, type=EAPOL_TYPE) / eapol_header(
         EAPOL_EAP_PACKET, payload
@@ -109,7 +112,7 @@ def build_md5_response(
     username: str,
     password: str,
     challenge: bytes,
-) -> Ether:
+) -> Packet:
     digest = md5_challenge_response(identifier, password, challenge)
     md5_body = bytes([len(digest)]) + digest + username.encode("gbk")
     payload = eap_packet(EAP_RESPONSE, identifier, EAP_MD5, md5_body)
@@ -130,9 +133,11 @@ def parse_eapol(raw: bytes) -> EapPacket | None:
     code = eap[0]
     identifier = eap[1]
     eap_len = int.from_bytes(eap[2:4], "big")
+    if eap_len < 4 or eap_len > len(eap):
+        return None
     if code in (EAP_SUCCESS, EAP_FAILURE):
         return EapPacket(code, identifier, None, b"")
-    if len(eap) < 5:
+    if eap_len < 5:
         return None
     return EapPacket(code, identifier, eap[4], eap[5:eap_len])
 
@@ -259,6 +264,14 @@ def authenticate(
                         client_ip,
                     )
                 challenge_len = parsed.data[0]
+                if challenge_len == 0 or len(parsed.data) < 1 + challenge_len:
+                    return AuthResult(
+                        AuthStatus.AUTH_FAILED,
+                        "invalid MD5 challenge",
+                        options.iface,
+                        src_mac,
+                        client_ip,
+                    )
                 challenge = parsed.data[1 : 1 + challenge_len]
                 sendp(
                     build_md5_response(

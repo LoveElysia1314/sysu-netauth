@@ -115,10 +115,10 @@ def main() -> None:
         raise RuntimeError(last_error or "authentication failed")
     except KeyboardInterrupt:
         print("Interrupted", file=sys.stderr)
-        raise SystemExit(130)
+        raise SystemExit(130) from None
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

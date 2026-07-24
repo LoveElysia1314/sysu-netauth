@@ -207,8 +207,9 @@ def _win32_enumerate(force: bool = False) -> list[dict]:
     """
     global _WIN32_CACHE
     now = time.monotonic()
+    cached = _WIN32_CACHE[1]
     if not force:
-        cached_at, cached = _WIN32_CACHE
+        cached_at = _WIN32_CACHE[0]
         if cached and now - cached_at < _WIN32_CACHE_TTL:
             return cached
 

@@ -17,6 +17,8 @@ import datetime
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 
@@ -37,8 +39,8 @@ def _ping_icmp(target: str) -> tuple[bool, str]:
         if proc.returncode == 0:
             return True, ""
         # 提取关键错误信息
-        lines = [l.strip() for l in proc.stdout.splitlines() if l.strip()]
-        err_lines = [l.strip() for l in proc.stderr.splitlines() if l.strip()]
+        lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+        err_lines = [line.strip() for line in proc.stderr.splitlines() if line.strip()]
         detail = "; ".join(lines[-2:] + err_lines[-2:])
         return False, detail or f"ping 返回码 {proc.returncode}"
     except subprocess.TimeoutExpired:
@@ -50,8 +52,6 @@ def _ping_icmp(target: str) -> tuple[bool, str]:
 def _ping_http(target: str) -> tuple[bool, str]:
     """使用 HTTP 请求 (TCP 443) 检测连通性。"""
     try:
-        import urllib.request
-
         req = urllib.request.Request(f"http://{target}", method="HEAD")
         # 短超时，快速失败
         urllib.request.urlopen(req, timeout=5)
@@ -145,7 +145,6 @@ def main():
 
     except KeyboardInterrupt:
         print()
-        elapsed = fail_count * args.interval  # 粗略估算
         print(f"[{_timestamp()}] 监控已停止")
         print(
             f"[{_timestamp()}] 总计: 检测 {ok_count + fail_count} 次, "

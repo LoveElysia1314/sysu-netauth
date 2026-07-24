@@ -4,7 +4,6 @@ import logging
 import logging.handlers
 import sys
 import threading
-from pathlib import Path
 
 import servicemanager
 import win32event

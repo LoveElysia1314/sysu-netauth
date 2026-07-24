@@ -12,6 +12,7 @@
 - **Windows 服务** — 系统启动后即可认证，无需等待用户登录
 - **系统托盘** — 驻留托盘，作为配置面板和服务状态监视器
 - **Npcap 引导安装** — 内置 Npcap 下载、完整性校验、提权安装向导
+- **多源检查更新** — 可使用任意联网通道，优先 Gitee、失败后回退 GitHub
 - **CLI 模式** — 支持脚本化认证、探测、注销、网卡列表
 - **双进程架构** — 后台 Windows 服务始终执行认证，GUI 负责配置和状态展示
 
@@ -24,13 +25,16 @@
        ├─ 自动选择有线网卡，执行 802.1X 认证
        ├─ 常驻响应交换机握手探测，维持在线状态
        ├─ 监听网卡插拔/重命名/故障转移
+       ├─ 通过任意联网通道低频检查更新 → 写入 update_state.json
+       ├─ 写入 service_cache.json 保存运行时网卡缓存
        └─ 写入 status.json 反映认证状态
 
 用户登录
   └─ sysu_netauth.exe GUI (Session 1)
        ├─ 编辑共享配置 → 写入 config.json
        ├─ 轮询 status.json 展示服务状态
-       └─ 写 command.json 触发认证/注销/重载
+       ├─ 读取 update_state.json 展示更新提示
+       └─ 写 commands\*.json 队列触发认证/注销/重载/检查更新
 ```
 
 认证始终由后台 Windows 服务执行，GUI 仅作为配置面板和状态监视器。退出 GUI 不影响后台认证。
@@ -177,7 +181,7 @@ Get-Content "$env:ProgramData\SYSUNetAuth\service.log" -Tail 20
 
 **service.log 为空**：先查看 `service_bootstrap.log`，它记录服务进程是否被 SCM 正常拉起。
 
-**修改配置后服务未立即响应**：GUI 会自动写 `command.json` 通知服务重新加载。也可手动触发：
+**修改配置后服务未立即响应**：GUI 会自动写入命令队列通知服务重新加载。仍可通过兼容入口手动触发：
 
 ```powershell
 '{"action":"reload_config"}' | Set-Content "$env:ProgramData\SYSUNetAuth\command.json" -Encoding UTF8
@@ -200,19 +204,24 @@ Get-Content "$env:ProgramData\SYSUNetAuth\service.log" -Tail 20
 | `launch_gui_on_login`  | bool   | `false`  | 用户登录后启动 GUI                 |
 | `hide_window_on_login` | bool   | `true`   | `--startup` 启动后隐藏窗口         |
 | `desktop_notify`       | bool   | `true`   | 状态变化时弹出桌面通知             |
-| `last_success_mac`     | string | `""`     | 上次成功认证的网卡 MAC（自动缓存） |
+| `last_success_mac`     | string | `""`     | 旧版本迁移字段；新版本缓存见 `service_cache.json` |
 
-> **安全说明**：密码以明文保存。请不要提交配置文件到仓库。
+> **安全说明**：密码以明文保存，但安装器将该目录 ACL 限制为仅 `SYSTEM`
+> 和管理员可访问。仍请勿复制或提交配置文件。
 
 ## 进程间通信
 
-三个 JSON 文件位于 `%ProgramData%\SYSUNetAuth\`，均使用原子写入：
+共享存储位于 `%ProgramData%\SYSUNetAuth\`，均使用原子写入：
 
-| 文件           | 写入者     | 读取者     | 用途                                                            |
-| -------------- | ---------- | ---------- | --------------------------------------------------------------- |
-| `config.json`  | GUI / 服务 | 服务 / GUI | 账号、密码、网卡、策略                                          |
-| `status.json`  | 服务       | GUI / CLI  | 当前认证状态（state/message/iface/mac/ipv4/gateway/dns/driver） |
-| `command.json` | GUI        | 服务       | 命令：`authenticate` / `logoff` / `reload_config`               |
+| 文件/目录             | 写入者 | 读取者     | 用途                                                            |
+| --------------------- | ------ | ---------- | --------------------------------------------------------------- |
+| `config.json`         | GUI    | 服务 / GUI | 账号、密码、网卡策略                                            |
+| `service_cache.json`  | 服务   | 服务       | 自动网卡及上次成功 MAC；避免服务覆盖用户配置                    |
+| `status.json`         | 服务   | GUI / CLI  | 当前认证状态（state/message/iface/mac/ipv4/gateway/dns/driver） |
+| `update_state.json`   | 服务   | GUI        | 更新检查结果、失败退避和下次检查时间                            |
+| `ui_state.json`       | GUI    | GUI        | 已通知版本及用户忽略的版本                                      |
+| `commands\*.json`     | GUI    | 服务       | 有序命令队列：认证、注销、重载配置、检查更新                    |
+| `command.json`        | 外部   | 服务       | 向后兼容的单命令入口                                            |
 
 ## 相关链接
 
@@ -220,6 +229,8 @@ Get-Content "$env:ProgramData\SYSUNetAuth\service.log" -Tail 20
 | ---------------------- | ---------------------------------------------------------------------------------------------------- |
 | 中山大学网络与信息中心 | [inc.sysu.edu.cn](https://inc.sysu.edu.cn)                                                           |
 | 有线网络接入说明       | [inc.sysu.edu.cn/service/wired-network-access](https://inc.sysu.edu.cn/service/wired-network-access) |
+| Gitee 项目主页          | [gitee.com/LoveElysia1314/sysu-netauth](https://gitee.com/LoveElysia1314/sysu-netauth)               |
+| 项目版本发布           | [GitHub Releases](https://github.com/LoveElysia1314/sysu-netauth/releases)                            |
 
 ## 维护者
 

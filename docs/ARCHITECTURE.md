@@ -17,13 +17,14 @@
        ├─ 自动选择有线网卡，执行 802.1X 认证
        ├─ 被动监听交换机重认证 (RenewListener)
        ├─ 监听网卡插拔/重命名/故障转移
+       ├─ 写入 service_cache.json
        └─ 写入 status.json
 
 用户登录
   └─ sysu_netauth.exe GUI (Session 1)         ← 配置面板 + 状态监视器
        ├─ 编辑共享配置 → config.json
        ├─ 轮询 status.json 展示服务状态
-       ├─ 写 command.json 触发操作
+       ├─ 写 commands/*.json 队列触发操作
        └─ 引导 Npcap 安装
 ```
 
@@ -59,17 +60,20 @@ sysu_netauth/
 ├── cli.py              # argparse CLI：认证/探测/注销/网卡列表/检查 Npcap
 │
 ├── core/               # ── 无 GUI 核心库（可被 service 和 app 共用）──
-│   ├── config.py       # AppConfig/ServiceStatus 数据类、JSON 读写、状态/命令存储、自启快捷方式
+│   ├── config.py       # 配置/状态/命令存储、服务运行时缓存
 │   ├── assets.py       # 资源路径解析（开发/frozen 模式兼容）
 │   ├── eapol.py        # EAPOL/MD5 协议栈：帧构造、parse、认证握手、注销
 │   ├── interfaces.py   # 网卡枚举(Win32 GetAdaptersAddresses)、类型判定、评分、EAPOL 探测、网络信息
-│   └── npcap.py        # Npcap 检测、下载、完整性校验、提权安装
+│   ├── npcap.py        # Npcap 检测、下载、完整性校验、提权安装
+│   └── update.py       # 更新清单解析、版本比较、可信 URL 校验
 │
 ├── service/            # ── Windows 服务进程（不含 Qt）──
 │   ├── engine.py       # 无 Qt 认证状态机：认证、续期、网卡监听、命令处理、重试
+│   ├── update_checker.py # 联网后的低频更新检查与失败退避
 │   └── win_service.py  # pywin32 服务宿主
 │
 └── app/               # ── GUI 配置面板（不含认证逻辑）──
+    ├── startup.py      # GUI 的最高权限登录计划任务
     ├── tray.py         # 托盘、服务状态轮询、配置编辑、Npcap 引导
     ├── views.py        # GUI 组件：MainWindow、_NetworkTable、CloseBehaviorDialog
     └── workers.py      # QThread：NpcapDownloadWorker
@@ -81,13 +85,17 @@ sysu_netauth/
 
 ### 2.1 进程间通信：Shared Store
 
-三个 JSON 文件位于 `%ProgramData%\SYSUNetAuth\`，所有写入使用**临时文件 + 原子替换**（先写 `.tmp` 再 `replace`），避免读取到半写入文件。
+共享文件位于 `%ProgramData%\SYSUNetAuth\`，所有写入使用**唯一临时文件 + 原子替换**，避免读取到半写入文件和多进程临时文件冲突。
 
-| 文件           | 写入者                 | 读取者     | 用途                 |
-| -------------- | ---------------------- | ---------- | -------------------- |
-| `config.json`  | GUI / 服务缓存成功网卡 | 服务 / GUI | 账号、密码、网卡策略 |
-| `status.json`  | 服务                   | GUI / CLI  | 当前认证状态         |
-| `command.json` | GUI                    | 服务       | 手动认证/注销/重载   |
+| 文件/目录            | 写入者 | 读取者     | 用途                         |
+| -------------------- | ------ | ---------- | ---------------------------- |
+| `config.json`        | GUI    | 服务 / GUI | 账号、密码、用户策略         |
+| `service_cache.json` | 服务   | 服务       | 自动网卡、上次成功 MAC       |
+| `status.json`        | 服务   | GUI / CLI  | 当前认证状态                 |
+| `update_state.json`  | 服务   | GUI        | 更新检查事实及调度状态       |
+| `ui_state.json`      | GUI    | GUI        | 通知和忽略状态               |
+| `commands/*.json`    | GUI    | 服务       | 有序的服务命令队列           |
+| `command.json`       | 外部   | 服务       | 兼容旧版本的单命令入口       |
 
 **为什么用 JSON 文件而不是管道/套接字？**
 
@@ -112,20 +120,20 @@ sysu_netauth/
   "gateway": "10.0.0.1",
   "dns": "114.114.114.114, 223.5.5.5",
   "driver": "Realtek USB GbE Family Controller",
-  "updated_at": 697.2198229,
+  "updated_at": 1783224000.0,
   "authenticated_at": "2026-07-05T12:00:00+08:00"
 }
 ```
 
 状态值：`idle` / `authenticating` / `authenticated` / `failed` / `stopped`
 
-#### command.json
+#### commands/*.json
 
 ```json
 { "action": "authenticate", "created_at": "2026-07-05T12:00:00+08:00" }
 ```
 
-支持的命令：`authenticate`、`logoff`、`reload_config`。服务读取后删除文件。
+每条命令使用独立文件，按文件名顺序消费，避免 GUI 快速操作时相互覆盖。支持 `authenticate`、`logoff`、`reload_config`、`check_update`。旧版 `command.json` 仍可读取。
 
 ---
 
@@ -191,11 +199,12 @@ GUI 端通过轮询 `status.json` 映射为图标：
 
 引擎以 1 秒 tick 运行，周期性任务通过统一的 `_timers` 列表管理：
 
-1. 读取 `command.json` 指令
+1. 读取兼容 `command.json` 与 `commands/*.json` 队列指令
 2. 周期性任务调度（每个 timer 持有 `[interval, next_run, callback]`）：
    - 每 3 秒重载配置文件
    - 每 5 秒检查网卡状态变化
    - 每 5 秒刷新 `status.json` 心跳
+   - 每 60 秒判断更新检查是否到期；请求使用 Windows 路由表选择任意可用网络
 3. 检测 `RenewListener` 失效事件 → 触发重认证
 4. 重试定时器到期执行重试
 
@@ -340,6 +349,9 @@ GUI 的详细布局和组件不在此重复（直接读 `views.py` 和 `tray.py`
 - **防闪烁**：状态卡片通过 150ms debounce 防止连续状态跳变时的视觉闪烁
 - **防重复通知**：内置冷却期，防止短时间内重复弹窗
 - **通知归属**：服务运行在 Session 0 不能可靠弹出桌面通知，因此桌面通知由 GUI 负责
+- **更新归属**：服务启动后独立调度更新检查，不依赖有线认证状态；可使用无线网等其他互联网通道。GUI 读取持久化结果；服务独立运行时仅写事件日志，绝不从 Session 0 弹窗
+- **源优先级**：先读取 Gitee 的 `updates/release.json`，请求失败、响应非法或重定向不可信时自动回退 GitHub
+- **检查频率**：首次联网延迟 2–5 分钟，成功后至少间隔 24 小时；失败按 30 分钟、2 小时、6 小时、24 小时退避
 - **配置即时生效**：配置变化立即写入 `config.json` + `write_command("reload_config")`
 
 ---
@@ -349,7 +361,10 @@ GUI 的详细布局和组件不在此重复（直接读 `views.py` 和 `tray.py`
 完整的配置字段表见 README「配置文件」章节，此处仅记录与架构相关的要点：
 
 - **存储路径**：`%ProgramData%\SYSUNetAuth\config.json`
-- **未知字段静默忽略**：配置加载时仅提取已知字段，未知键不写入。新版本新增字段对旧配置透明
+- **单写者**：GUI 写用户配置，服务运行时缓存写入独立 `service_cache.json`
+- **未知字段静默忽略**：配置加载时仅提取已知字段，新版本新增字段对旧配置透明
+- **登录启动**：管理员清单程序通过“最高权限”计划任务启动，不使用 Startup 快捷方式
+- **数据 ACL**：共享目录仅允许 `SYSTEM` 与管理员访问，保护其中的明文凭据
 
 ---
 
@@ -410,7 +425,7 @@ python scripts\build.py --skip-installer  # 仅 EXE
 ### 4.2 安装包行为
 
 1. 停止已在运行的 GUI 进程和服务（`taskkill` + `sc stop`，最多等 10 秒）
-2. 创建 `%ProgramData%\SYSUNetAuth` 并设置 Users 组可写
+2. 创建 `%ProgramData%\SYSUNetAuth`，ACL 仅保留 `SYSTEM` 与管理员
 3. 注册 `SYSUNetAuth` 服务，启动类型自动
 4. 配置故障恢复（`sc failure`：首次失败 60 秒后重启）
 5. 加入系统 PATH（支持 `sysu_netauth` 命令行）
@@ -419,7 +434,7 @@ python scripts\build.py --skip-installer  # 仅 EXE
 ### 4.3 卸载包行为
 
 1. 停止并删除 `SYSUNetAuth` 服务
-2. 删除 Startup 快捷方式等残留文件
+2. 删除登录计划任务和旧版 Startup 快捷方式等残留文件
 3. 询问是否保留 `%ProgramData%\SYSUNetAuth`（含账号密码）
 
 ---

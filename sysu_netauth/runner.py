@@ -1,13 +1,15 @@
 """
 Unified entry: tray (no args) or CLI (with args).
 
-Single-instance protection via QLocalServer / QLocalSocket (named pipe IPC).
+Single-instance protection uses a Win32 mutex.
 """
 
 from __future__ import annotations
 
 import sys
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QApplication
 
 from sysu_netauth.core.config import APP_ID, load_config
@@ -16,13 +18,8 @@ GUI_FLAGS = {"--startup"}
 SERVICE_FLAGS = {"--service"}
 
 
-def _app_icon() -> object:
+def _app_icon() -> QIcon:
     """Load the app icon; returns a QIcon."""
-    from pathlib import Path
-
-    from PySide6.QtGui import QIcon, QPixmap
-    from PySide6.QtCore import Qt
-
     from sysu_netauth.core.assets import resolve_asset_path
 
     path = resolve_asset_path("icon-ethernet")
@@ -43,8 +40,6 @@ def _attach_parent_console() -> None:
     kernel32.AttachConsole.argtypes = [wintypes.DWORD]
     kernel32.AttachConsole.restype = wintypes.BOOL
     if kernel32.AttachConsole(-1):
-        import os
-
         sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")
         sys.stderr = open("CONOUT$", "w", encoding="utf-8", errors="replace")
 

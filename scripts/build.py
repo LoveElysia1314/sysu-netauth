@@ -24,12 +24,14 @@ SYSU NetAuth — PyInstaller 打包 & Inno Setup 安装程序制作脚本
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
 import site
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -60,6 +62,21 @@ APP_SERVICE_EXE_NAME = "sysu_netauth_service.exe"
 
 class BuildDependencyError(RuntimeError):
     pass
+
+
+def _replace_artifact(source: Path, destination: Path) -> None:
+    """在 Windows 杀毒软件短暂扫描目标文件时可靠发布构建产物。"""
+    last_error: OSError | None = None
+    for attempt in range(30):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            time.sleep(0.25 * min(attempt + 1, 4))
+    raise PermissionError(
+        f"无法替换构建产物（目标可能仍被占用）: {destination}"
+    ) from last_error
 
 
 def _subprocess_env() -> dict[str, str]:
@@ -226,6 +243,35 @@ def generate_iss_file(config: BuildConfig) -> Path:
         raise FileNotFoundError(f"找不到 ISS 模板: {template_path}")
 
     iss_content = template_path.read_text(encoding="utf-8")
+    required_setup_lines = (
+        "PrivilegesRequired=admin",
+        "PrivilegesRequiredOverridesAllowed=",
+        "postinstall skipifsilent runascurrentuser",
+        "CloseApplications=force",
+        'ValueData: "~ RUNASADMIN"',
+        "function PrepareToInstall(var NeedsRestart: Boolean): String;",
+        "Flags: ignoreversion restartreplace",
+    )
+    missing = [line for line in required_setup_lines if line not in iss_content]
+    if missing:
+        raise ValueError("安装脚本缺少强制管理员权限设置: " + ", ".join(missing))
+    release_path = config.project_root / "updates" / "release.json"
+    try:
+        release_data = json.loads(release_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"更新清单不可读: {release_path}") from exc
+    if release_data.get("schema_version") != 1:
+        raise ValueError("updates/release.json schema_version 必须为 1")
+    if str(release_data.get("version") or "").removeprefix("v") != VERSION:
+        raise ValueError(
+            "更新清单版本与程序版本不一致: "
+            f"{release_data.get('version')} != {VERSION}"
+        )
+    release_url = str(release_data.get("release_url") or "")
+    if not release_url.startswith(
+        "https://github.com/LoveElysia1314/sysu-netauth/releases/"
+    ):
+        raise ValueError("更新清单 release_url 必须指向本项目的 GitHub Releases")
     app_dir_relative = os.path.relpath(config.app_dir, config.script_dir)
     substitutions = {
         "@APP_NAME@": APP_NAME,
@@ -263,7 +309,7 @@ def build_installer(config: BuildConfig):
         output_dir.mkdir(exist_ok=True)
 
         print("[4/4] 正在编译安装包...")
-        result = subprocess.run(
+        subprocess.run(
             [str(inno_compiler), str(iss_file)],
             check=True,
             capture_output=True,
@@ -283,7 +329,7 @@ def build_installer(config: BuildConfig):
         setup_src = output_dir / setup_name
         if setup_src.exists():
             setup_dst = config.project_root / setup_name
-            shutil.move(str(setup_src), str(setup_dst))
+            _replace_artifact(setup_src, setup_dst)
             print(f"[4/4] 安装包已生成: {setup_dst}")
 
             shutil.rmtree(output_dir, ignore_errors=True)
@@ -315,9 +361,11 @@ def create_setup_zip(config: BuildConfig):
         return
     zip_name = f"{APP_ID}_Setup_v{VERSION}.zip"
     zip_path = config.project_root / zip_name
-    zip_path.unlink(missing_ok=True)
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+    temp_zip = zip_path.with_suffix(".zip.tmp")
+    temp_zip.unlink(missing_ok=True)
+    with zipfile.ZipFile(temp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.write(setup_path, setup_name)
+    _replace_artifact(temp_zip, zip_path)
     size_mb = zip_path.stat().st_size / (1024 * 1024)
     print(f"   [+] 安装包 ZIP: {zip_name} ({size_mb:.1f} MB)")
 
@@ -424,7 +472,7 @@ def main():
         print("  [*] 使用说明:")
         print(f"     安装包: 双击 {APP_ID}_Setup_v{VERSION}.exe")
         print(f"     安装包 ZIP: 解压后双击 {APP_ID}_Setup_v{VERSION}.exe")
-        print(f"     CLI:    sysu_netauth -i '以太网 4' -u 'NetID' -p 'your_password'")
+        print("     CLI:    sysu_netauth -i '以太网 4' -u 'NetID' -p 'your_password'")
         print()
 
     except BuildDependencyError as e:

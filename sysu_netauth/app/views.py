@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -33,6 +34,14 @@ from sysu_netauth.core.config import (
     APP_VERSION,
     CONFIG_PATH,
     AppConfig,
+)
+from sysu_netauth.core.update import (
+    GITEE_PROJECT_URL,
+    ISSUES_URL,
+    NPCAP_URL,
+    PROJECT_URL,
+    RELEASES_URL,
+    SYSU_WIRED_HELP_URL,
 )
 
 STATUS_COLORS: dict[str, str] = {
@@ -155,6 +164,9 @@ class MainWindow(QMainWindow):
 
     npcap_installed = Signal()
     advanced_settings_changed = Signal()
+    check_update_requested = Signal()
+    view_release_requested = Signal()
+    ignore_update_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -166,7 +178,7 @@ class MainWindow(QMainWindow):
         self._state_debounce.setSingleShot(True)
         self._state_debounce.timeout.connect(self._apply_state)
         self.setWindowTitle(f"{APP_DISPLAY_NAME} v{APP_VERSION}")
-        self._base_size = (660, 300)
+        self._base_size = (660, 350)
 
         self._build_central_widget()
 
@@ -206,7 +218,103 @@ class MainWindow(QMainWindow):
         body.addWidget(self._build_network_panel(), 3)
         body.addWidget(self._build_control_group(), 2)
         root.addLayout(body, 1)
+        root.addSpacing(8)
+        self.update_banner = self._build_update_banner()
+        root.addWidget(self.update_banner)
+        root.addWidget(self._build_footer())
         return page
+
+    def _build_update_banner(self) -> QFrame:
+        frame = QFrame()
+        frame.setObjectName("updateBanner")
+        frame.setStyleSheet(
+            "QFrame#updateBanner { background:#fffbeb; border:1px solid #fde68a;"
+            " border-radius:5px; }"
+        )
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(10, 5, 8, 5)
+        self.update_banner_label = QLabel()
+        self.update_banner_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.update_banner_label.setWordWrap(True)
+        layout.addWidget(self.update_banner_label, 1)
+        self.view_update_btn = QPushButton("查看版本")
+        self.view_update_btn.clicked.connect(self.view_release_requested.emit)
+        layout.addWidget(self.view_update_btn)
+        self.ignore_update_btn = QPushButton("忽略")
+        self.ignore_update_btn.clicked.connect(self.ignore_update_requested.emit)
+        layout.addWidget(self.ignore_update_btn)
+        frame.hide()
+        return frame
+
+    def _build_footer(self) -> QWidget:
+        footer = QWidget()
+        layout = QHBoxLayout(footer)
+        layout.setContentsMargins(2, 2, 2, 0)
+        self.version_label = QLabel(f"v{APP_VERSION}")
+        layout.addWidget(self.version_label)
+        layout.addStretch(1)
+        self.update_status_label = QLabel("")
+        layout.addWidget(self.update_status_label)
+        self.check_update_btn = QPushButton("检查更新")
+        self.check_update_btn.clicked.connect(self.check_update_requested.emit)
+        layout.addWidget(self.check_update_btn)
+        resources_btn = QPushButton("帮助与资源")
+        resources_btn.clicked.connect(self.show_resources)
+        layout.addWidget(resources_btn)
+        return footer
+
+    def show_resources(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("帮助与资源")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(430)
+        layout = QVBoxLayout(dialog)
+        title = QLabel(f"<b>{APP_DISPLAY_NAME} v{APP_VERSION}</b>")
+        layout.addWidget(title)
+        links = QLabel(
+            "<p>"
+            f'<a href="{GITEE_PROJECT_URL}">项目主页（Gitee）</a><br>'
+            f'<a href="{PROJECT_URL}">项目主页（GitHub）</a><br>'
+            f'<a href="{RELEASES_URL}">版本发布与下载</a><br>'
+            f'<a href="{ISSUES_URL}">问题反馈</a><br>'
+            f'<a href="{NPCAP_URL}">Npcap 官方下载</a><br>'
+            f'<a href="{SYSU_WIRED_HELP_URL}">中山大学有线网络接入说明</a>'
+            "</p>"
+        )
+        links.setOpenExternalLinks(True)
+        links.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        layout.addWidget(links)
+        note = QLabel(
+            "更新检查由后台服务执行，可使用无线网等任意可访问互联网的连接；"
+            "优先访问 Gitee，失败后回退到 GitHub。"
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
+        dialog.exec()
+
+    def set_update_checking(self) -> None:
+        self.check_update_btn.setEnabled(False)
+        self.check_update_btn.setText("检查中…")
+        self.update_status_label.setText("正在检查更新")
+
+    def set_update_idle(self, text: str = "") -> None:
+        self.check_update_btn.setEnabled(True)
+        self.check_update_btn.setText("检查更新")
+        self.update_status_label.setText(text)
+
+    def show_update_available(self, version: str, summary: str = "") -> None:
+        message = f"发现 SYSU NetAuth v{version}"
+        if summary:
+            message += f"：{summary}"
+        self.update_banner_label.setText(message)
+        self.update_banner.show()
+        self.set_update_idle(f"v{version} 可用")
+
+    def hide_update_available(self) -> None:
+        self.update_banner.hide()
 
     def _build_control_group(self) -> QGroupBox:
         group = QGroupBox("配置面板")
@@ -232,7 +340,10 @@ class MainWindow(QMainWindow):
         password_row.addWidget(self.password_toggle_btn)
 
         self.iface_combo = QComboBox()
-        self.iface_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.iface_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         self.iface_combo.addItem("自动探测有线网卡")
 
         form = QGridLayout()
