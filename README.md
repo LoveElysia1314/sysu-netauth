@@ -6,6 +6,7 @@
 - Linux x64：命令行 + systemd 服务，无桌面依赖。
 - 自动选择有线网卡、多网卡故障转移、启动重试、持续响应交换机重认证。
 - EAP 成功后验证互联网连通性；验证期间仍持续响应 EAP 请求。
+- Windows 服务独立处理睡眠/休眠恢复：重建捕获并自动重新认证，无需打开 GUI；保留手动断开和关闭自动认证的选择。
 - 状态通过本地 IPC 推送，无状态文件轮询、心跳写入、Scapy 或 Python/Qt 运行时。
 
 Windows 仍需要 [Npcap](https://npcap.com/#download)。程序支持从官网下载并校验安装程序的数字签名后启动安装向导；安装包不捆绑 Npcap。Linux 使用内核原始套接字，不需要 libpcap。请先退出其他 802.1X 客户端。
@@ -106,6 +107,8 @@ Windows 在管理员终端使用相同命令，无需 `sudo`。直接认证命�
 ## 配置与升级
 
 Windows 配置：`%ProgramData%\SYSUNetAuth\config.json`。首次读取旧 Python 配置时保留 `config.json.python-backup`，迁移凭据、行为设置和已成功网卡缓存。请保留该备份至确认升级成功。
+
+Windows 休眠恢复后，服务先等待约 2 秒，再重新选择网卡并认证；网卡尚未就绪时在 120 秒恢复宽限期内退避重试。无需启动或登录 GUI，稳定连接后没有新增周期轮询。原因分析、日志检查和实机验证见 [休眠恢复说明](docs/RESUME.md)。
 
 Linux 配置：`/etc/sysu-netauth/config.json`；缓存：`/var/lib/sysu-netauth`；IPC：`/run/sysu-netauth/control.sock`。可手动编辑配置后重启服务，或使用 `config import` 即时应用。
 

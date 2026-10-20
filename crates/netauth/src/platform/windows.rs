@@ -1,5 +1,8 @@
 use super::{Adapter, Monitor, virtual_mac, virtual_name};
-use crate::{config::Paths, engine::Event};
+use crate::{
+    config::Paths,
+    engine::{Event, PowerEvent, PowerNotifier},
+};
 use anyhow::{Context, Result, bail, ensure};
 use std::{
     ffi::{CStr, CString, OsStr, c_void},
@@ -19,6 +22,7 @@ use windows_sys::Win32::{
     Security::*,
     Storage::FileSystem::*,
     System::{IO::*, LibraryLoader::*, Pipes::*, Services::*, Threading::*},
+    UI::WindowsAndMessaging::{PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND},
 };
 
 pub fn wide(value: impl AsRef<OsStr>) -> Vec<u16> {
@@ -908,6 +912,7 @@ impl PipeListener {
 }
 
 static STOP: OnceLock<SyncSender<Event>> = OnceLock::new();
+static POWER: OnceLock<Arc<PowerNotifier>> = OnceLock::new();
 static SCM: OnceLock<usize> = OnceLock::new();
 fn report_service(state: u32, code: u32) {
     if let Some(handle) = SCM.get() {
@@ -916,7 +921,7 @@ fn report_service(state: u32, code: u32) {
             dwServiceType: SERVICE_WIN32_OWN_PROCESS,
             dwCurrentState: state,
             dwControlsAccepted: if state == SERVICE_RUNNING {
-                SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN
+                SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN | SERVICE_ACCEPT_POWEREVENT
             } else {
                 0
             },
@@ -939,17 +944,37 @@ pub fn register_stop_sender(tx: SyncSender<Event>) {
         windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(console_stop), 1);
     }
 }
+pub fn register_power_notifier(power: Arc<PowerNotifier>) {
+    let _ = POWER.set(power);
+}
 unsafe extern "system" fn console_stop(_: u32) -> i32 {
     if let Some(tx) = STOP.get() {
         let _ = tx.try_send(Event::Stop);
     }
     1
 }
-unsafe extern "system" fn control(code: u32, _: u32, _: *mut c_void, _: *mut c_void) -> u32 {
+unsafe extern "system" fn control(
+    code: u32,
+    event_type: u32,
+    _: *mut c_void,
+    _: *mut c_void,
+) -> u32 {
     if code == SERVICE_CONTROL_STOP || code == SERVICE_CONTROL_SHUTDOWN {
         report_service(SERVICE_STOP_PENDING, 0);
         if let Some(tx) = STOP.get() {
             let _ = tx.try_send(Event::Stop);
+        }
+    }
+    if code == SERVICE_CONTROL_POWEREVENT {
+        if let Some(power) = POWER.get() {
+            match event_type {
+                PBT_APMSUSPEND => power.notify(PowerEvent::Suspend),
+                // This arrives for unattended wakes too. RESUMESUSPEND is a
+                // later user-presence notification; handling both would reset
+                // an already recovering connection a second time.
+                PBT_APMRESUMEAUTOMATIC => power.notify(PowerEvent::Resume),
+                _ => {}
+            }
         }
     }
     0
