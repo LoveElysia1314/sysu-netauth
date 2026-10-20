@@ -1,4 +1,4 @@
-//! Runs in a private user/network namespace: no campus network or root login needed.
+//! Runs in a private network namespace, with a user namespace for unprivileged runs.
 #![cfg(target_os = "linux")]
 use netauth::{
     config::{self, Config, Paths},
@@ -76,24 +76,35 @@ fn engine_request(tx: &mpsc::SyncSender<Event>, action: Action) -> Response {
     response
 }
 
+fn in_network_namespace(test: &str) -> bool {
+    if std::env::var_os("NETAUTH_IN_NAMESPACE").is_some() {
+        return true;
+    }
+    let mut command = Command::new("unshare");
+    command.arg("--net");
+    // CI elevates only this test executable. Root needs no UID mapping, which
+    // can be denied by the runner's unprivileged-user-namespace restrictions.
+    if unsafe { libc::geteuid() } != 0 {
+        command.args(["--user", "--map-root-user"]);
+    }
+    let status = command
+        .arg(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--ignored", "--nocapture"])
+        .env("NETAUTH_IN_NAMESPACE", "1")
+        .env("NETAUTH_TEST_VETH", "1")
+        .status()
+        .expect("start unshare (requires util-linux)");
+    assert!(
+        status.success(),
+        "isolated test {test} failed; if namespace creation was denied, run the test executable via sudo (see apps/native/docs/ARCHITECTURE.md)"
+    );
+    false
+}
+
 #[test]
-#[ignore = "requires user/network namespaces and iproute2; run with --ignored --nocapture"]
+#[ignore = "requires network namespaces and iproute2; run with --ignored --nocapture"]
 fn isolated_resume_reauthenticates_without_gui_or_link_change() {
-    if std::env::var_os("NETAUTH_IN_NAMESPACE").is_none() {
-        let status = Command::new("unshare")
-            .args(["--user", "--map-root-user", "--net"])
-            .arg(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "isolated_resume_reauthenticates_without_gui_or_link_change",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env("NETAUTH_IN_NAMESPACE", "1")
-            .env("NETAUTH_TEST_VETH", "1")
-            .status()
-            .unwrap();
-        assert!(status.success(), "isolated resume test failed");
+    if !in_network_namespace("isolated_resume_reauthenticates_without_gui_or_link_change") {
         return;
     }
     ip(&["link", "set", "lo", "up"]);
@@ -265,22 +276,9 @@ fn success(src: [u8; 6], dst: [u8; 6], id: u8) -> Vec<u8> {
 }
 
 #[test]
-#[ignore = "requires user/network namespaces and iproute2; run with --ignored --nocapture"]
+#[ignore = "requires network namespaces and iproute2; run with --ignored --nocapture"]
 fn isolated_service_authentication_and_renewal() {
-    if std::env::var_os("NETAUTH_IN_NAMESPACE").is_none() {
-        let status = Command::new("unshare")
-            .args(["--user", "--map-root-user", "--net"])
-            .arg(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "isolated_service_authentication_and_renewal",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env("NETAUTH_IN_NAMESPACE", "1")
-            .status()
-            .unwrap();
-        assert!(status.success(), "isolated integration test failed");
+    if !in_network_namespace("isolated_service_authentication_and_renewal") {
         return;
     }
     ip(&["link", "set", "lo", "up"]);
