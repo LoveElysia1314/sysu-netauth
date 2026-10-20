@@ -66,7 +66,8 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertEqual(kwargs["cwd"], script.parent)
         contents = script.read_text(encoding="utf-8")
         if any(arg.startswith("/DMyAppVersion=") for arg in command):
-            self.assertIn(f"/DAppSourceDir={self.source}", command)
+            source_arg = next(arg for arg in command if arg.startswith("/DAppSourceDir="))
+            self.assertTrue(Path(source_arg.split("=", 1)[1]).samefile(self.source))
             self.assertIn("{#AppSourceDir}\\sysu_netauth_gui.exe", contents)
         else:
             self.assertNotIn("@APP_", contents)
