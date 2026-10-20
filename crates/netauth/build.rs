@@ -2,15 +2,26 @@ fn main() {
     println!("cargo:rerun-if-changed=../../packaging/windows.rc");
     println!("cargo:rerun-if-changed=../../packaging/gui.manifest");
     println!("cargo:rerun-if-changed=../../assets");
+    println!("cargo:rerun-if-env-changed=NETAUTH_RC");
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         let out =
             std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("windows.res");
-        let status = std::process::Command::new("rc.exe")
+        let compiler = std::env::var_os("NETAUTH_RC").unwrap_or_else(|| {
+            if cfg!(windows) {
+                "rc.exe".into()
+            } else {
+                "llvm-rc".into()
+            }
+        });
+        let packaging = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap())
+            .join("../../packaging");
+        let status = std::process::Command::new(&compiler)
+            .current_dir(packaging)
             .arg("/nologo")
             .arg(format!("/fo{}", out.display()))
-            .arg("../../packaging/windows.rc")
+            .arg("windows.rc")
             .status()
-            .expect("rc.exe is required (run in a Visual Studio developer shell)");
+            .unwrap_or_else(|e|panic!("cannot run resource compiler {compiler:?}: {e}; use a VS developer shell on Windows, or install LLVM and set NETAUTH_RC on Linux"));
         assert!(status.success(), "Windows resource compilation failed");
         println!(
             "cargo:rustc-link-arg-bin=sysu_netauth_gui={}",

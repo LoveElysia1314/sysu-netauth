@@ -31,6 +31,32 @@ Windows 在安装了 Visual Studio C++ 工具和 Windows SDK 的开发者 PowerS
 
 输出包含 `sysu_netauth.exe`（CLI）、`sysu_netauth_service.exe`（服务）、`sysu_netauth_gui.exe`（设置/托盘）。打开设置窗口需要管理员权限。GUI 退出后，独立服务模式继续认证；关闭窗口会隐藏到托盘。
 
+### 在 Linux 交叉编译 Windows 发行版
+
+使用 [cargo-xwin](https://github.com/rust-cross/cargo-xwin) 构建相同的 MSVC 目标，保留静态 CRT、LTO、`opt-level=3`、单代码生成单元和符号裁剪。LLVM、SDK 和 cargo-xwin 仅为构建依赖，不随程序分发。
+
+```sh
+# Debian / Ubuntu；其他发行版安装对应的 LLVM 工具和 zip。
+sudo apt-get install clang llvm lld zip
+rustup target add x86_64-pc-windows-msvc
+cargo install --locked cargo-xwin --version 0.23.1
+sh scripts/build-windows.sh
+```
+
+首次构建会下载 Microsoft SDK/CRT，缓存在 `target/xwin`；可通过 `XWIN_CACHE_DIR` 修改。支持 `CARGO_TARGET_DIR`；若 LLVM 工具带版本后缀，可设置 `NETAUTH_RC=/usr/bin/llvm-rc-19`。
+
+产物为 `dist/sysu-netauth-windows-x64.zip`，仅包含三个原生 EXE；GUI 已内嵌图标和管理员权限清单。构建会检查 PE 架构、GUI/控制台子系统、内嵌资源和 DLL 导入，拒绝依赖动态 VC CRT 或 MinGW 运行时的产物。Npcap 仍由 Windows 用户另行安装，并按需加载。
+
+ZIP 中的服务需在 Windows 管理员终端注册并启动；请先解压到固定安装目录：
+
+```powershell
+.\sysu_netauth_service.exe --install
+sc.exe start SYSUNetAuth
+.\sysu_netauth_gui.exe
+```
+
+已有 Inno Setup 构建流程可直接使用 `dist/sysu_netauth` 中的 EXE 生成安装包；`build-windows.sh` 本身生成 ZIP，不依赖 Wine 或 Windows 虚拟机。
+
 ## Linux 安装
 
 ```sh

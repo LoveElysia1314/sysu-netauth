@@ -3,6 +3,8 @@ $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
 cargo build --locked --release --target x86_64-pc-windows-msvc
 if ($LASTEXITCODE -ne 0) { throw 'Cargo build failed' }
+cargo run --locked --quiet --example verify_windows -- 'target\x86_64-pc-windows-msvc\release'
+if ($LASTEXITCODE -ne 0) { throw 'Windows artifact verification failed' }
 $output = 'dist\sysu_netauth'
 New-Item -ItemType Directory -Force $output | Out-Null
 Copy-Item 'target\x86_64-pc-windows-msvc\release\sysu_netauth.exe', 'target\x86_64-pc-windows-msvc\release\sysu_netauth_service.exe', 'target\x86_64-pc-windows-msvc\release\sysu_netauth_gui.exe' $output
