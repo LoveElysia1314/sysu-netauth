@@ -1,237 +1,118 @@
 # SYSU NetAuth
 
-中山大学（SYSU）有线校园网 802.1X (EAPOL/MD5) 非官方自动认证客户端，Windows 桌面端。
+中山大学有线校园网 802.1X / EAP-MD5 自动认证客户端，使用 Rust 实现。
 
-## 功能
+- Windows 10/11 x64：后台 Windows 服务 + 原生 Win32 设置窗口和系统托盘。
+- Linux x64：命令行 + systemd 服务，无桌面依赖。
+- 自动选择有线网卡、多网卡故障转移、启动重试、持续响应交换机重认证。
+- EAP 成功后验证互联网连通性；验证期间仍持续响应 EAP 请求。
+- 状态通过本地 IPC 推送，无状态文件轮询、心跳写入、Scapy 或 Python/Qt 运行时。
 
-- **自动认证** — 开机或检测到有线网卡后自动完成 802.1X 握手
-- **智能网卡选择** — 自动排除虚拟、无线、回环网卡，支持多网卡故障转移
-- **手动/自动模式** — 可固定指定网卡，或让程序自动探测最佳网卡
-- **续期维护** — 常驻响应交换机握手探测，无需主动轮询
-- **自动重试** — 认证失败后按 Fibonacci 或固定间隔自动重试
-- **Windows 服务** — 系统启动后即可认证，无需等待用户登录
-- **系统托盘** — 驻留托盘，作为配置面板和服务状态监视器
-- **Npcap 引导安装** — 内置 Npcap 下载、完整性校验、提权安装向导
-- **多源检查更新** — 可使用任意联网通道，优先 Gitee、失败后回退 GitHub
-- **CLI 模式** — 支持脚本化认证、探测、注销、网卡列表
-- **双进程架构** — 后台 Windows 服务始终执行认证，GUI 负责配置和状态展示
-
-## 架构概览
-
-```text
-系统启动
-  └─ SYSUNetAuth Windows 服务 (Session 0)
-       ├─ 读取 %ProgramData%\SYSUNetAuth\config.json
-       ├─ 自动选择有线网卡，执行 802.1X 认证
-       ├─ 常驻响应交换机握手探测，维持在线状态
-       ├─ 监听网卡插拔/重命名/故障转移
-       ├─ 通过任意联网通道低频检查更新 → 写入 update_state.json
-       ├─ 写入 service_cache.json 保存运行时网卡缓存
-       └─ 写入 status.json 反映认证状态
-
-用户登录
-  └─ sysu_netauth.exe GUI (Session 1)
-       ├─ 编辑共享配置 → 写入 config.json
-       ├─ 轮询 status.json 展示服务状态
-       ├─ 读取 update_state.json 展示更新提示
-       └─ 写 commands\*.json 队列触发认证/注销/重载/检查更新
-```
-
-认证始终由后台 Windows 服务执行，GUI 仅作为配置面板和状态监视器。退出 GUI 不影响后台认证。
-
-## 与官方客户端的差异
-
-中山大学官方提供的是[锐捷认证客户端 v4.97](https://inc.sysu.edu.cn/sites/default/files/2021-04/%E9%94%90%E6%8D%B7%E8%AE%A4%E8%AF%81%E5%AE%A2%E6%88%B7%E7%AB%AF%20Windows%E7%89%88%20v4.97.zip)，
-两者均使用标准 802.1X (EAPOL/MD5) 协议。
-
-> **⚠️ 与本项目存在冲突** — 锐捷认证客户端与本项目都会持有一张网卡的 802.1X 会话，
-> 同时运行会互相干扰，导致认证状态不稳定。使用本程序前请关闭锐捷认证的自启动，
-> 切**勿同时运行这两个程序**。
-
-本项目的优势：
-
-- **自动网卡故障转移** — 多网卡场景下自动切换可用网卡
-- **被动续期监听** — 常驻响应交换机在线握手探测，网络零中断
-- **轻量无广告** — 仅托盘图标 + 控制面板，无额外驻留进程
-- **开源可审计** — 代码公开，仅实现标准 EAP-MD5 路径，无闭源组件
-
-## 快速开始
-
-### 前置依赖
-
-需要 **Npcap**（WinPcap API 兼容模式），用于收发二层 EAPOL 帧。
-程序内置安装引导，首次启动时会提示下载安装。保持默认选项即可。
-
-### 从源码运行
-
-```powershell
-pip install -r requirements.txt
-python run.py
-```
-
-### 命令行诊断
-
-```powershell
-# 列出可用有线网卡
-python run.py --list-ifaces
-
-# 探测指定网卡是否有 EAPOL 认证服务器
-python run.py -i "以太网 2" --probe-iface
-
-# 执行认证
-python run.py -i "以太网 2" -u "你的NetID" -p "你的密码"
-
-# 发送注销帧
-python run.py -i "以太网 2" --logoff
-
-# 检查 Npcap 状态
-python run.py --check-npcap
-```
-
-省略 `-p/--password` 时会安全提示输入密码。安装后可用 `sysu_netauth` 直接调用：
-
-```powershell
-sysu_netauth --list-ifaces
-sysu_netauth -i "以太网 2" -u "NetID"
-```
-
-### CLI 参数
-
-| 参数             | 说明                        |
-| ---------------- | --------------------------- |
-| `-i, --iface`    | 指定网卡名称                |
-| `-u, --username` | NetID                       |
-| `-p, --password` | 密码（省略则交互式输入）    |
-| `--timeout`      | 超时秒数（默认 30）         |
-| `--logoff`       | 发送 EAPOL-Logoff 注销      |
-| `--check-npcap`  | 检查 Npcap 可用性           |
-| `--list-ifaces`  | 列出候选网卡及评分          |
-| `--probe-iface`  | 探测指定网卡的 EAPOL 服务器 |
-| `--client-ip`    | 覆盖自动检测的客户端 IPv4   |
-
-## 工作原理
-
-项目只实现标准 EAP-MD5 路径：
-
-1. 发送 `EAPOL-Start` 广播帧到 PAE 组播 MAC `01:80:c2:00:00:03`
-2. 等待交换机回复 `EAP-Request/Identity`，回复 NetID
-3. 等待 `EAP-Request/MD5-Challenge`，计算并回复 MD5 响应
-4. 认证成功后常驻响应交换机的定时握手探测，维持在线
-
-## 配置推荐场景
-
-| 服务模式 | 开机启动程序 | 启动后自动认证 | 效果                                    |
-| -------- | ------------ | -------------- | --------------------------------------- |
-| ✅ 开启  | ✅ 开启      | ✅ 开启        | 服务后台认证 + 开机弹出 GUI             |
-| ✅ 开启  | ❌ 关闭      | ✅ 开启        | 服务后台静默认证，完全无托盘/GUI        |
-| ✅ 开启  | ✅ 开启      | ❌ 关闭        | 开机弹出 GUI，需手动点击"重新连接"      |
-| ❌ 关闭  | ✅ 开启      | 任意           | 开机弹出 GUI，GUI 退出后服务停止认证    |
-| ❌ 关闭  | ❌ 关闭      | —              | 程序不自动运行，手动启动后 GUI 决定认证 |
+Windows 仍需要 [Npcap](https://npcap.com/#download)。程序支持从官网下载并校验安装程序的数字签名后启动安装向导；安装包不捆绑 Npcap。Linux 使用内核原始套接字，不需要 libpcap。请先退出其他 802.1X 客户端。
 
 ## 构建
 
-额外安装 PyInstaller：
+安装当前稳定版 Rust。仓库提交了 Cargo.lock，构建使用 `--locked`。
+
+```sh
+cargo test --locked --workspace
+cargo build --locked --release
+```
+
+Linux 打包：`sh scripts/build.sh`；产物位于 `dist/sysu-netauth-linux-x64.tar.gz`。
+
+Windows 在安装了 Visual Studio C++ 工具和 Windows SDK 的开发者 PowerShell 中执行：
 
 ```powershell
-pip install -r requirements.txt
-pip install PyInstaller
+./scripts/build.ps1 -SkipInstaller
+# 安装 Inno Setup 6 后可生成安装包：
+./scripts/build.ps1
 ```
 
-```powershell
-python scripts\build.py              # 完整构建（EXE → 安装包 → ZIP）
-python scripts\build.py --skip-installer  # 仅 EXE
+输出包含 `sysu_netauth.exe`（CLI）、`sysu_netauth_service.exe`（服务）、`sysu_netauth_gui.exe`（设置/托盘）。打开设置窗口需要管理员权限。GUI 退出后，独立服务模式继续认证；关闭窗口会隐藏到托盘。
+
+## Linux 安装
+
+```sh
+sh scripts/build.sh
+sudo sh scripts/install-linux.sh
+sudo sysu_netauth config import /path/to/config.json
+sudo sysu_netauth authenticate
+sudo sysu_netauth status
 ```
 
-输出：
+最小配置：
 
-```text
-dist\sysu_netauth\sysu_netauth.exe       # GUI/CLI 程序
-dist\sysu_netauth\sysu_netauth_service.exe  # 服务程序
-SYSUNetAuth_Setup_v{version}.exe         # 安装包
-SYSUNetAuth_Setup_v{version}.zip          # 安装包 ZIP（浏览器下载友好）
+```json
+{"username":"NetID","password":"密码","iface_mode":"auto","auto_auth":true}
 ```
 
-### 构建脚本
+配置文件包含凭据，请限制其权限。也可以通过 `sudo sysu_netauth config password` 安全输入密码。服务不负责 DHCP 或修改 IP 配置，继续使用系统的网络管理器；需要避免另一认证器同时占用同一网卡。
 
-| 脚本                         | 用途                                         |
-| ---------------------------- | -------------------------------------------- |
-| `scripts/build.py`           | 完整构建入口：PyInstaller → Inno Setup → ZIP |
-| `scripts/build_exe.py`       | PyInstaller 独立打包（被 build.py 调用）     |
-| `scripts/setup.template.iss` | Inno Setup 安装脚本模板                      |
-
-## 测试与验证
-
-### 安装包测试
-
-1. 安装 Npcap，保持默认选项
-2. 双击运行 `SYSUNetAuth_Setup_v{version}.exe`
-3. 启动 GUI，填写 NetID/密码
-4. 点击"立即认证"或重启等待服务自动认证
-
-```powershell
-# 检查服务状态
-sc query SYSUNetAuth
-Get-Content "$env:ProgramData\SYSUNetAuth\status.json" | ConvertFrom-Json
-Get-Content "$env:ProgramData\SYSUNetAuth\service.log" -Tail 20
+```sh
+sudo systemctl stop sysu-netauth
+sudo systemctl disable sysu-netauth
+# 删除程序和 unit 前先停止服务；按需保留 /etc/sysu-netauth 和 /var/lib/sysu-netauth。
 ```
 
-### 常见问题
+## CLI
 
-**状态显示 IDLE 且未自动认证**：检查是否已填写 NetID 和密码，确认 `auto_auth` 为 `true`，网线已插入。
+```sh
+sysu_netauth interfaces
+sudo sysu_netauth status --json
+sudo sysu_netauth watch --json
+sudo sysu_netauth authenticate
+sudo sysu_netauth logoff
+sudo sysu_netauth config
+sudo sysu_netauth config password
+sudo sysu_netauth check-update
 
-**service.log 为空**：先查看 `service_bootstrap.log`，它记录服务进程是否被 SCM 正常拉起。
-
-**修改配置后服务未立即响应**：GUI 会自动写入命令队列通知服务重新加载。仍可通过兼容入口手动触发：
-
-```powershell
-'{"action":"reload_config"}' | Set-Content "$env:ProgramData\SYSUNetAuth\command.json" -Encoding UTF8
-'{"action":"authenticate"}'  | Set-Content "$env:ProgramData\SYSUNetAuth\command.json" -Encoding UTF8
+# 直接访问网卡，需要先停止后台服务；与服务互斥。
+sudo sysu_netauth probe --iface eth0
+sudo sysu_netauth authenticate --iface eth0 --username NetID --timeout 90
+sudo sysu_netauth logoff --iface eth0
 ```
 
-## 配置文件
+Windows 在管理员终端使用相同命令，无需 `sudo`。直接认证命令完成认证和连通性检查后退出；持续续期请使用后台服务。`--timeout` 包含连通性验证时间。
 
-路径：`%ProgramData%\SYSUNetAuth\config.json`
+新 CLI 使用子命令，旧的 `--list-ifaces` / `--probe-iface` 等顶层参数已移除。配置/状态读取通过服务执行，`interfaces` 直接使用操作系统 API。服务控制仅允许管理员/SYSTEM 或 Linux root，配置输出默认隐藏密码。
 
-| 字段                   | 类型   | 默认值   | 说明                               |
-| ---------------------- | ------ | -------- | ---------------------------------- |
-| `username`             | string | `""`     | NetID                              |
-| `password`             | string | `""`     | 明文密码                           |
-| `iface`                | string | `""`     | 指定网卡名                         |
-| `iface_mode`           | string | `"auto"` | `"auto"` 自动 / `"manual"` 手动    |
-| `auto_auth`            | bool   | `true`   | 启动后自动认证                     |
-| `retry_interval`       | int    | `60`     | 失败重试间隔秒数（15–3600）        |
-| `service_mode`         | bool   | `true`   | 服务独立运行，退出 GUI 不影响认证  |
-| `launch_gui_on_login`  | bool   | `false`  | 用户登录后启动 GUI                 |
-| `hide_window_on_login` | bool   | `true`   | `--startup` 启动后隐藏窗口         |
-| `desktop_notify`       | bool   | `true`   | 状态变化时弹出桌面通知             |
-| `last_success_mac`     | string | `""`     | 旧版本迁移字段；新版本缓存见 `service_cache.json` |
+## 配置与升级
 
-> **安全说明**：密码以明文保存，但安装器将该目录 ACL 限制为仅 `SYSTEM`
-> 和管理员可访问。仍请勿复制或提交配置文件。
+Windows 配置：`%ProgramData%\SYSUNetAuth\config.json`。首次读取旧 Python 配置时保留 `config.json.python-backup`，迁移凭据、行为设置和已成功网卡缓存。请保留该备份至确认升级成功。
 
-## 进程间通信
+Linux 配置：`/etc/sysu-netauth/config.json`；缓存：`/var/lib/sysu-netauth`；IPC：`/run/sysu-netauth/control.sock`。可手动编辑配置后重启服务，或使用 `config import` 即时应用。
 
-共享存储位于 `%ProgramData%\SYSUNetAuth\`，均使用原子写入：
+| 字段 | 默认值 | 含义 |
+| --- | --- | --- |
+| `username`, `password` | 空 | GBK 可编码的 NetID 和密码 |
+| `iface_mode` | `auto` | 自动选择或 `manual` 固定网卡 |
+| `iface` | 空 | 手动模式的网卡名/Windows adapter ID |
+| `auto_auth` | `true` | 自动认证及失败重试 |
+| `retry_interval` | `60` | 正常重试间隔，15–3600 秒 |
+| `service_mode` | `true` | Windows 服务独立运行；关闭时退出 GUI 会停止服务 |
+| `launch_gui_on_login` | `false` | Windows 最高权限登录任务 |
+| `hide_window_on_login` | `true` | 登录启动时隐藏窗口 |
+| `desktop_notify` | `true` | Windows 托盘通知 |
 
-| 文件/目录             | 写入者 | 读取者     | 用途                                                            |
-| --------------------- | ------ | ---------- | --------------------------------------------------------------- |
-| `config.json`         | GUI    | 服务 / GUI | 账号、密码、网卡策略                                            |
-| `service_cache.json`  | 服务   | 服务       | 自动网卡及上次成功 MAC；避免服务覆盖用户配置                    |
-| `status.json`         | 服务   | GUI / CLI  | 当前认证状态（state/message/iface/mac/ipv4/gateway/dns/driver） |
-| `update_state.json`   | 服务   | GUI        | 更新检查结果、失败退避和下次检查时间                            |
-| `ui_state.json`       | GUI    | GUI        | 已通知版本及用户忽略的版本                                      |
-| `commands\*.json`     | GUI    | 服务       | 有序命令队列：认证、注销、重载配置、检查更新                    |
-| `command.json`        | 外部   | 服务       | 向后兼容的单命令入口                                            |
+`status.json`、`command.json` 和 `commands/*.json` 不再读写。替代方式为 CLI `status` / `watch` / `authenticate` / `logoff` / `config import`。实时状态不持久化，断开 IPC 表示服务不可用。
 
-## 相关链接
+互联网验证保持原有语义：使用系统路由向 `119.29.29.29` / `114.114.114.114` 发起 ICMP 检查。这可以通过任意可用网络成功，不代表测试流量一定经过认证网卡；禁用 ICMP 的网络也可能导致验证失败。
 
-| 资源                   | 地址                                                                                                 |
-| ---------------------- | ---------------------------------------------------------------------------------------------------- |
-| 中山大学网络与信息中心 | [inc.sysu.edu.cn](https://inc.sysu.edu.cn)                                                           |
-| 有线网络接入说明       | [inc.sysu.edu.cn/service/wired-network-access](https://inc.sysu.edu.cn/service/wired-network-access) |
-| Gitee 项目主页          | [gitee.com/LoveElysia1314/sysu-netauth](https://gitee.com/LoveElysia1314/sysu-netauth)               |
-| 项目版本发布           | [GitHub Releases](https://github.com/LoveElysia1314/sysu-netauth/releases)                            |
+## 验证与性能
 
-## 维护者
+```sh
+cargo fmt --all --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
+# Linux 需要 iproute2，并允许创建 user/network namespace：
+cargo test --locked --test linux_network -- --ignored --nocapture
+# 对已运行的服务进程采样（PID 后的可选参数为秒数）：
+cargo run --locked --release --example measure_linux -- SERVICE_PID 600
+```
 
-- [架构说明](docs/ARCHITECTURE.md) — 面向维护者的完整架构文档
+Windows：`./scripts/measure-windows.ps1 -ProcessName sysu_netauth_service -Seconds 600`，再对 `sysu_netauth_gui` 单独采样。目标为稳定状态 CPU 小于单核 0.1%，服务和托盘总内存相对同机器 Python 基线减少至少 50%。这些是验收目标；Windows 实测和校园网真实握手仍需在对应环境完成。
+
+本地 Linux 30 秒采样：待机约 2.75 MiB RSS；已认证且保持捕获会话约 2.94 MiB RSS，两者采样期间均无可测 CPU 时间增长或磁盘写入。环境、测量限制和复现步骤见 [性能记录](docs/PERFORMANCE.md)。
+
+实现细节、IPC、部署验证见 [架构说明](docs/ARCHITECTURE.md)。

@@ -1,0 +1,33 @@
+[Unit]
+Description=SYSU wired 802.1X authentication
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sysu_netauth_service
+Restart=on-failure
+RestartSec=5
+User=root
+Group=root
+RuntimeDirectory=sysu-netauth
+RuntimeDirectoryMode=0700
+StateDirectory=sysu-netauth
+StateDirectoryMode=0700
+ConfigurationDirectory=sysu-netauth
+ConfigurationDirectoryMode=0700
+UMask=0077
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+ReadWritePaths=/etc/sysu-netauth /var/lib/sysu-netauth /run/sysu-netauth
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -19,14 +19,14 @@ config.json
 private/
 
 # Build artifacts
+target/
 build/
 dist/
 *.egg-info/
 SYSUNetAuth_Setup_v*.exe
 SYSUNetAuth_Setup_v*.zip
 
-# PyInstaller
-*.manifest
+# Native Windows resources are source files (including packaging/gui.manifest).
 
 # Reverse-engineering generated bulk artifacts
 analysis/
