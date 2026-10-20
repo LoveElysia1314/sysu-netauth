@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -95,6 +97,62 @@ class ConfigStoreTests(unittest.TestCase):
                 json.loads(path.read_text(encoding="utf-8"))["username"],
                 "test",
             )
+
+    def test_concurrent_replacements_are_serialized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            real_replace = os.replace
+            replacing = threading.Lock()
+            overlaps = threading.Event()
+            start = threading.Barrier(8)
+
+            def contended_replace(source, target) -> None:
+                if not replacing.acquire(blocking=False):
+                    overlaps.set()
+                    raise PermissionError("concurrent Windows replacement")
+                try:
+                    # Keep the destination busy while other writers arrive.
+                    time.sleep(0.01)
+                    real_replace(source, target)
+                finally:
+                    replacing.release()
+
+            def write(index: int) -> None:
+                start.wait(timeout=10)
+                save_config(AppConfig(username=f"user-{index}"), path)
+
+            with patch(
+                "sysu_netauth.core.config.os.replace", side_effect=contended_replace
+            ):
+                with ThreadPoolExecutor(max_workers=8) as executor:
+                    list(executor.map(write, range(8)))
+
+            self.assertFalse(overlaps.is_set(), "writers competed inside os.replace")
+            self.assertTrue(load_config(path).username.startswith("user-"))
+            self.assertEqual(list(Path(directory).glob("*.tmp")), [])
+
+    def test_permanent_replace_failure_preserves_config_and_cleans_temp(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            save_config(AppConfig(username="original"), path)
+            original = path.read_bytes()
+
+            with (
+                patch(
+                    "sysu_netauth.core.config.os.replace",
+                    side_effect=PermissionError("access denied"),
+                ) as replace,
+                patch("sysu_netauth.core.config.time.sleep") as sleep,
+            ):
+                with self.assertRaises(PermissionError):
+                    save_config(AppConfig(username="replacement"), path)
+
+            self.assertEqual(replace.call_count, 5)
+            self.assertEqual(sleep.call_count, 4)
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(list(Path(directory).glob("*.tmp")), [])
+            save_config(AppConfig(username="recovered"), path)
+            self.assertEqual(load_config(path).username, "recovered")
 
     def test_status_write_skips_fsync_but_config_write_is_durable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
