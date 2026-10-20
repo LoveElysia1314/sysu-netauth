@@ -1,0 +1,149 @@
+"""Release packaging contracts; application binaries are never executed."""
+
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+import zipfile
+
+from test_release_version import versioning
+
+ROOT = Path(__file__).resolve().parent.parent
+RUST_VERSION = "1.2.3"
+PYTHON_VERSION = "1.2.3"
+SPEC = importlib.util.spec_from_file_location("package_windows", ROOT / "scripts/package_windows.py")
+packaging = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(packaging)
+
+
+class WindowsPackagingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="netauth packaging ")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.original_path = sys.path[:]
+        self.addCleanup(lambda: sys.path.__setitem__(slice(None), self.original_path))
+        for relative in (
+            "apps/rust/Cargo.toml",
+            "Cargo.lock",
+            "apps/rust/scripts/setup.template.iss",
+            "apps/python/scripts/build.py",
+            "apps/python/pyproject.toml",
+            "apps/python/scripts/setup.template.iss",
+            "apps/python/sysu_netauth/core/config.py",
+            "apps/python/updates/release.json",
+        ):
+            destination = self.root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / relative, destination)
+        self.root_patch = patch.object(packaging, "ROOT", self.root)
+        self.root_patch.start()
+        self.addCleanup(self.root_patch.stop)
+        self.source = self.root / "downloaded artifact"
+        self.source.mkdir()
+        for name in ("sysu_netauth.exe", "sysu_netauth_service.exe", "sysu_netauth_gui.exe"):
+            (self.source / name).write_bytes(b"MZ test input: never executed")
+        (self.source / "_internal").mkdir()
+        (self.source / "_internal/python313.dll").write_bytes(b"runtime fixture")
+        self.output = self.root / "release output"
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        subprocess.run(["git", "-C", str(self.root), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "fixture"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "tag", "v1.2.3"], check=True)
+        self.info = versioning.resolve(self.root, "v1.2.3")
+        versioning.stamp(self.root, self.info)
+        (self.source / "release-version.json").write_text(json.dumps(self.info), encoding="utf-8")
+        self.python_version = PYTHON_VERSION
+
+    def compile(self, command, **kwargs):
+        self.assertTrue(kwargs["check"])
+        script = Path(command[-1])
+        self.assertEqual(kwargs["cwd"], script.parent)
+        contents = script.read_text(encoding="utf-8")
+        if any(arg.startswith("/DMyAppVersion=") for arg in command):
+            self.assertIn(f"/DAppSourceDir={self.source}", command)
+            self.assertIn("{#AppSourceDir}\\sysu_netauth_gui.exe", contents)
+        else:
+            self.assertNotIn("@APP_", contents)
+            self.assertIn(f'MyAppVersion "{self.python_version}"', contents)
+            self.assertRegex(contents, r"VersionInfoVersion=\d+\.\d+\.\d+\s")
+            self.assertIn("recursesubdirs", contents)
+            self.assertIn(str(self.source.relative_to(self.root)), contents)
+        output = Path(next(arg[2:] for arg in command if arg.startswith("/O")))
+        name = next(arg[2:] for arg in command if arg.startswith("/F"))
+        (output / f"{name}.exe").write_bytes(b"MZ compiled setup fixture")
+        return subprocess.CompletedProcess(command, 0)
+
+    def test_both_installers_have_distinct_versions_zip_contents_and_checksums(self):
+        self.python_version = PYTHON_VERSION
+        with patch.object(packaging.subprocess, "run", side_effect=self.compile) as compile_setup:
+            rust = packaging.package("rust", self.source, self.output, Path("ISCC.exe"))
+            python = packaging.package("python", self.source, self.output, Path("ISCC.exe"))
+        self.assertEqual(compile_setup.call_count, 2)
+        self.assertEqual(rust[0].name, f"SYSUNetAuth_Rust_msvc_x64_Setup_v{RUST_VERSION}.exe")
+        self.assertEqual(python[0].name, f"SYSUNetAuth_Python_x64_Setup_v{PYTHON_VERSION}.exe")
+        for setup, archive, checksums in (rust, python):
+            with zipfile.ZipFile(archive) as bundle:
+                self.assertEqual(bundle.namelist(), [setup.name])
+                self.assertEqual(bundle.read(setup.name), setup.read_bytes())
+            for line in checksums.read_text(encoding="utf-8").splitlines():
+                digest, name = line.split("  ")
+                self.assertEqual(digest, hashlib.sha256((self.output / name).read_bytes()).hexdigest())
+        self.assertFalse((self.root / "apps/python/scripts/setup.iss").exists())
+
+    def test_one_prerelease_tag_drives_both_installers_and_checks_artifact_identity(self):
+        subprocess.run(["git", "-C", str(self.root), "tag", "-d", "v1.2.3"], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["git", "-C", str(self.root), "tag", "v0.7.0-alpha.0"], check=True)
+        info = versioning.resolve(self.root, "v0.7.0-alpha.0")
+        versioning.stamp(self.root, info)
+        (self.source / "release-version.json").write_text(json.dumps(info), encoding="utf-8")
+        self.python_version = "0.7.0a0"
+        with patch.object(packaging.subprocess, "run", side_effect=self.compile):
+            rust = packaging.package("rust", self.source, self.output, Path("ISCC.exe"))
+            python = packaging.package("python", self.source, self.output, Path("ISCC.exe"))
+        self.assertIn("_v0.7.0-alpha.0.exe", rust[0].name)
+        self.assertIn("_v0.7.0a0.exe", python[0].name)
+        (self.source / "release-version.json").write_text(json.dumps(info | {"commit": "another-commit"}), encoding="utf-8")
+        with patch.object(packaging.subprocess, "run") as compile_setup:
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                packaging.package("rust", self.source, self.output, Path("ISCC.exe"))
+            compile_setup.assert_not_called()
+
+    def test_incomplete_artifacts_fail_before_compilation(self):
+        (self.source / "_internal").rename(self.source / "missing runtime")
+        with patch.object(packaging.subprocess, "run") as compile_setup:
+            with self.assertRaisesRegex(FileNotFoundError, "_internal"):
+                packaging.package("python", self.source, self.output, Path("ISCC.exe"))
+            (self.source / "sysu_netauth_service.exe").unlink()
+            with self.assertRaisesRegex(FileNotFoundError, "sysu_netauth_service.exe"):
+                packaging.package("rust", self.source, self.output, Path("ISCC.exe"))
+            compile_setup.assert_not_called()
+
+    def test_compiler_failure_cannot_reuse_stale_installer(self):
+        self.output.mkdir()
+        for variant, label, version in (
+            ("rust", "Rust_msvc_x64", RUST_VERSION),
+            ("python", "Python_x64", PYTHON_VERSION),
+        ):
+            with self.subTest(variant=variant):
+                stale = self.output / f"SYSUNetAuth_{label}_Setup_v{version}.exe"
+                stale.write_bytes(b"stale setup")
+                with patch.object(packaging.subprocess, "run", side_effect=subprocess.CalledProcessError(2, "ISCC.exe")):
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        packaging.package(variant, self.source, self.output, Path("ISCC.exe"))
+                self.assertFalse(stale.exists())
+                self.assertFalse((self.root / "apps/python/scripts/setup.iss").exists())
+
+    def test_success_exit_without_installer_is_rejected(self):
+        with patch.object(packaging.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)):
+            with self.assertRaisesRegex(FileNotFoundError, "did not produce"):
+                packaging.package("rust", self.source, self.output, Path("ISCC.exe"))
+
+
+if __name__ == "__main__":
+    unittest.main()
