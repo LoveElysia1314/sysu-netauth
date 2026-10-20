@@ -4,7 +4,8 @@
 
 ## [v0.7.0] - Unreleased
 
-- 使用 Rust 完整替代 Python、Qt、Scapy 和 PyInstaller；Windows 提供原生 Win32 界面，Linux 提供 CLI/systemd 支持。
+- 新增 Rust 原生版本，发行程序无需 Python、Qt、Scapy 或 PyInstaller；Windows 提供原生 Win32 界面，Linux 提供 CLI/systemd 支持。
+- 将两个可运行版本分别整理到 `apps/native` 和 `apps/python`；恢复原 Python v0.6.2 的源码、锁定依赖、测试和打包工具，增加独立 CI 与版本切换说明，分离发行产物目录。
 - 使用持久捕获会话、操作系统网卡通知和本地 IPC 推送，移除周期状态轮询和心跳文件写入。
 - 互联网连通性验证期间保持 EAP 接收与续期响应；保留 GBK/EAP-MD5、故障转移和重试行为。
 - 修复 Windows 睡眠/休眠后需要 GUI 重新连接的问题：服务接收电源事件，丢弃旧捕获和认证状态，等待网卡恢复后自动重新认证；有限退避重试兼容网卡/Npcap 延迟就绪，保留手动断开与关闭自动认证的设置。

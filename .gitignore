@@ -37,3 +37,8 @@ analysis/*.bin
 Thumbs.db
 .DS_Store
 sysu_netauth.spec
+
+# Generated Python installer scripts and intermediate compiler output
+apps/python/scripts/setup.iss
+apps/python/scripts/Output/
+.pytest_cache/

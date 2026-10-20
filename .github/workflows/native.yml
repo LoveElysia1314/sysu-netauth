@@ -19,13 +19,13 @@ jobs:
       - if: runner.os == 'Linux'
         run: cargo test --locked --test linux_network -- --ignored --nocapture
       - if: runner.os == 'Windows'
-        run: ./scripts/build.ps1 -SkipInstaller
+        run: ./apps/native/scripts/build.ps1 -SkipInstaller
       - if: runner.os == 'Linux'
-        run: sh scripts/build.sh
+        run: sh apps/native/scripts/build.sh
       - uses: actions/upload-artifact@v4
         with:
           name: sysu-netauth-${{ runner.os }}
-          path: dist/
+          path: apps/native/dist/
   windows-cross:
     runs-on: ubuntu-latest
     env:
@@ -41,8 +41,8 @@ jobs:
           path: target/xwin
           key: xwin-linux-x64-0.23.1
       - run: cargo install --locked cargo-xwin --version 0.23.1
-      - run: sh scripts/build-windows.sh
+      - run: sh apps/native/scripts/build-windows.sh
       - uses: actions/upload-artifact@v4
         with:
           name: sysu-netauth-Windows-from-Linux
-          path: dist/sysu-netauth-windows-x64.zip
+          path: apps/native/dist/sysu-netauth-windows-x64.zip
