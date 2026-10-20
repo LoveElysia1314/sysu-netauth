@@ -12,7 +12,10 @@ from typing import Any
 
 APP_DISPLAY_NAME = "SYSU NetAuth"
 APP_ID = "SYSUNetAuth"
-APP_VERSION = "0.6.3"
+try:
+    from sysu_netauth._version import __version__ as APP_VERSION
+except ImportError:
+    APP_VERSION = "0.0.0"  # Source checkout before build-time version generation.
 
 PROGRAMDATA_ROOT = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
 APP_DIR = PROGRAMDATA_ROOT / APP_ID

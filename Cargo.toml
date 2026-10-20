@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/native"]
+members = ["apps/rust"]
 resolver = "2"
 
 [profile.release]

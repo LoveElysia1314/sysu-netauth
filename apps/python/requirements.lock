@@ -19,3 +19,5 @@ shiboken6==6.11.1
     #   pyside6
     #   pyside6-addons
     #   pyside6-essentials
+
+packaging==26.3

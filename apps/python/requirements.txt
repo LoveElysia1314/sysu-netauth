@@ -2,3 +2,5 @@ psutil
 pywin32
 PySide6
 scapy
+
+packaging==26.3

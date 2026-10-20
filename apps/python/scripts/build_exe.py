@@ -144,7 +144,6 @@ def build_spec_content(onefile: bool, collect_name: str) -> str:
         "unittest",
         "setuptools",
         "pip",
-        "packaging",
     ]
     excludes = ",\n        ".join(repr(e) for e in excludes_list)
     hidden = [

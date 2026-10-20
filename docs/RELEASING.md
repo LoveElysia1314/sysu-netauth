@@ -1,0 +1,45 @@
+# Windows releases
+
+## Tags and CI
+
+Versions come from Git tags. Rust uses `git-version`; Python uses `setuptools-scm`.
+
+| Tag | Rust | Python |
+| --- | --- | --- |
+| `v0.7.0` | `0.7.0` | `0.7.0` |
+| `v0.7.0-alpha.0` | `0.7.0-alpha.0` | `0.7.0a0` |
+| `v0.7.0-beta.2` | `0.7.0-beta.2` | `0.7.0b2` |
+| `v0.7.0-rc.1` | `0.7.0-rc.1` | `0.7.0rc1` |
+
+Commit the release changes, create a tag in one of these formats, and push it. **Windows release installers** builds both applications and creates a draft GitHub release. Prerelease tags produce prereleases. Review installation, upgrade and service operation on Windows before publishing the draft.
+
+The workflow can also run manually on a release tag to produce Actions artifacts. Reruns update draft assets; published releases cannot be replaced by this workflow.
+
+| Application | Installer | Checksums |
+| --- | --- | --- |
+| Rust, MSVC x64 | `SYSUNetAuth_Rust_msvc_x64_Setup_v<version>.exe` | `SHA256SUMS-rust-msvc-x64.txt` |
+| Python, x64 | `SYSUNetAuth_Python_x64_Setup_v<version>.exe` | `SHA256SUMS-python-x64.txt` |
+
+Each installer also has a ZIP download. Rust builds on Windows and Linux both target the MSVC ABI.
+
+## Local packaging
+
+Use a clean release tag and install Inno Setup 6. From the repository root:
+
+```powershell
+python -m pip install -r requirements-build.txt
+python scripts/release_version.py --write
+```
+
+Build the applications using their [Rust](../apps/rust/README.md) or [Python](../apps/python/README.md) instructions, then package:
+
+```powershell
+Copy-Item build/release-version.json apps/rust/dist/sysu_netauth/
+Copy-Item build/release-version.json apps/python/dist/sysu_netauth/
+python scripts/package_windows.py --variant rust --input-dir apps/rust/dist/sysu_netauth
+python scripts/package_windows.py --variant python --input-dir apps/python/dist/sysu_netauth
+```
+
+Output: `dist/windows-installers/`. Options: `--output-dir` and `--compiler` (path to `ISCC.exe`).
+
+Release tooling tests: `python -m unittest discover -s tests -v`.

@@ -1,0 +1,4 @@
+# Build-host tools; setuptools-scm is not required by the installed apps.
+setuptools==80.9.0
+setuptools-scm==9.2.1
+packaging==26.3

@@ -24,9 +24,9 @@ SYSU NetAuth — PyInstaller 打包 & Inno Setup 安装程序制作脚本
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
+import runpy
 import shutil
 import site
 import subprocess
@@ -47,12 +47,14 @@ if str(_project_root) not in sys.path:
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# 动态读取版本号
-_init_text = (PROJECT_ROOT / "sysu_netauth" / "core" / "config.py").read_text(
-    encoding="utf-8"
+# setuptools-scm writes a plain Python module before freezing. Loading it does
+# not import the application or require SCM tooling in the installed runtime.
+_version_file = PROJECT_ROOT / "sysu_netauth" / "_version.py"
+VERSION = (
+    runpy.run_path(str(_version_file))["__version__"]
+    if _version_file.is_file()
+    else "0.0.0"
 )
-_match = re.search(r'APP_VERSION\s*=\s*"([^"]+)"', _init_text)
-VERSION = _match.group(1) if _match else "0.0.0"
 
 APP_NAME = "SYSU NetAuth"
 APP_ID = "SYSUNetAuth"
@@ -255,27 +257,11 @@ def generate_iss_file(config: BuildConfig) -> Path:
     missing = [line for line in required_setup_lines if line not in iss_content]
     if missing:
         raise ValueError("安装脚本缺少强制管理员权限设置: " + ", ".join(missing))
-    release_path = config.project_root / "updates" / "release.json"
-    try:
-        release_data = json.loads(release_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"更新清单不可读: {release_path}") from exc
-    if release_data.get("schema_version") != 1:
-        raise ValueError("updates/release.json schema_version 必须为 1")
-    if str(release_data.get("version") or "").removeprefix("v") != VERSION:
-        raise ValueError(
-            "更新清单版本与程序版本不一致: "
-            f"{release_data.get('version')} != {VERSION}"
-        )
-    release_url = str(release_data.get("release_url") or "")
-    if not release_url.startswith(
-        "https://github.com/LoveElysia1314/sysu-netauth/releases/"
-    ):
-        raise ValueError("更新清单 release_url 必须指向本项目的 GitHub Releases")
     app_dir_relative = os.path.relpath(config.app_dir, config.script_dir)
     substitutions = {
         "@APP_NAME@": APP_NAME,
         "@APP_VERSION@": VERSION,
+        "@APP_FILE_VERSION@": re.match(r"\d+\.\d+\.\d+", VERSION)[0],
         "@APP_EXE_NAME@": APP_EXE_NAME,
         "@APP_SERVICE_EXE_NAME@": APP_SERVICE_EXE_NAME,
         "@APP_ID@": APP_ID,
