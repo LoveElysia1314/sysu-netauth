@@ -1,8 +1,8 @@
-#include <windows.h>
-1 RT_MANIFEST "../../packaging/gui.manifest"
-1 ICON "../../assets/icon-ethernet.ico"
-2 ICON "../../assets/tray-blue.ico"
-3 ICON "../../assets/tray-gray.ico"
-4 ICON "../../assets/tray-green.ico"
-5 ICON "../../assets/tray-orange.ico"
-6 ICON "../../assets/tray-red.ico"
+// RT_MANIFEST = 24. Keep this header-free for rc.exe and llvm-rc alike.
+1 24 "gui.manifest"
+1 ICON "../assets/icon-ethernet.ico"
+2 ICON "../assets/tray-blue.ico"
+3 ICON "../assets/tray-gray.ico"
+4 ICON "../assets/tray-green.ico"
+5 ICON "../assets/tray-orange.ico"
+6 ICON "../assets/tray-red.ico"

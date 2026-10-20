@@ -18,4 +18,6 @@ sh scripts/benchmark-linux.sh 600
 sh scripts/benchmark-linux-authenticated.sh 600
 ```
 
-Use `scripts/measure-windows.ps1` separately for the Windows service and GUI. Windows memory/startup measurements, the same-machine Python comparison, and real campus-network acceptance remain outstanding. These Linux results do not establish the planned 50% Windows memory reduction. Windows source passes cross-target compilation and strict Clippy checks; no Windows executable was run in this environment.
+Use `scripts/measure-windows.ps1` separately for the Windows service and GUI. Windows memory/startup measurements, the same-machine Python comparison, and real campus-network acceptance remain outstanding. These Linux results do not establish the planned 50% Windows memory reduction.
+
+The Linux-to-Windows MSVC release build has also been validated. CLI, service and GUI executable sizes were 1,141,760, 764,928 and 987,136 bytes respectively (file sizes, not resident memory). PE inspection confirmed static CRT linkage, Windows OS DLL imports only, correct executable subsystems, and the GUI's embedded elevation manifest and six icon groups. The Windows CLI's `--help` ran successfully under Wine without Npcap. This is a startup smoke test, not a native Windows GUI/service or performance test. Cross-builds use the same optimization profile as native Windows builds.
