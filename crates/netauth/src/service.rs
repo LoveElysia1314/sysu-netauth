@@ -29,6 +29,8 @@ pub fn run(paths: Paths) -> Result<()> {
     let _server = ipc::start(&paths, tx.clone())?;
     let _monitor = platform::monitor(tx.clone())?;
     let mut engine = Engine::new(paths, tx)?;
+    #[cfg(windows)]
+    platform::register_power_notifier(engine.power_notifier());
     crate::diagnostics::record(engine.paths(), "service starting");
     #[cfg(windows)]
     platform::service_ready();

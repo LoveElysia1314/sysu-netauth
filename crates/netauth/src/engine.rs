@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     sync::{
         Arc,
+        atomic::{AtomicU8, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
     time::{Duration, Instant},
@@ -19,10 +20,40 @@ pub enum Event {
     Packet(u64, Vec<u8>),
     CaptureError(u64, String),
     NetworkChanged,
+    PowerChanged,
     Connectivity(u64, bool),
     Update(Result<Update, String>),
     Call(Call),
     Stop,
+}
+
+#[derive(Clone, Copy)]
+pub enum PowerEvent {
+    Suspend = 1,
+    Resume = 2,
+}
+
+/// SCM callbacks must return promptly, even if the engine's bounded queue is full.
+/// Keep the latest power state separately; queued traffic will also wake the engine.
+pub struct PowerNotifier {
+    pending: AtomicU8,
+    events: SyncSender<Event>,
+}
+impl PowerNotifier {
+    pub fn notify(&self, event: PowerEvent) {
+        self.pending.store(event as u8, Ordering::Release);
+        let _ = self.events.try_send(Event::PowerChanged);
+    }
+    fn take(&self) -> Option<PowerEvent> {
+        if self.pending.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        match self.pending.swap(0, Ordering::AcqRel) {
+            1 => Some(PowerEvent::Suspend),
+            2 => Some(PowerEvent::Resume),
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -62,6 +93,10 @@ pub struct Engine {
     paths: Paths,
     cache: Cache,
     events: SyncSender<Event>,
+    power: Arc<PowerNotifier>,
+    suspended: bool,
+    recovering_resume: bool,
+    preserve_manual_disconnect: bool,
     pub generation: u64,
     session: Option<Session>,
     probe: Option<Probe>,
@@ -120,7 +155,14 @@ impl Engine {
             },
             paths,
             cache,
+            power: Arc::new(PowerNotifier {
+                pending: AtomicU8::new(0),
+                events: events.clone(),
+            }),
             events,
+            suspended: false,
+            recovering_resume: false,
+            preserve_manual_disconnect: false,
             generation: 0,
             session: None,
             probe: None,
@@ -175,6 +217,40 @@ impl Engine {
         self.start_deadline = None;
         self.renewing = false;
     }
+    pub fn power_notifier(&self) -> Arc<PowerNotifier> {
+        self.power.clone()
+    }
+    fn drain_power(&mut self) {
+        let Some(event) = self.power.take() else {
+            return;
+        };
+        // Resume also invalidates when the suspend notification was not observed.
+        self.invalidate();
+        self.candidates.clear();
+        self.snapshot.adapter = None;
+        self.retry = None;
+        self.preserve_manual_disconnect |= self.manual_disconnect;
+        self.recovering_resume = false;
+        match event {
+            PowerEvent::Suspend => {
+                self.suspended = true;
+                self.status(State::Idle, "系统休眠，等待恢复");
+            }
+            PowerEvent::Resume => {
+                self.suspended = false;
+                self.retries = 0;
+                self.startup_retry = 0;
+                self.startup = Instant::now() + Duration::from_secs(120);
+                if self.config.auto_auth && !self.manual_disconnect {
+                    self.recovering_resume = true;
+                    self.retry = Some(Instant::now() + Duration::from_secs(2));
+                    self.status(State::Idle, "系统已恢复，等待网卡就绪后重新认证");
+                } else {
+                    self.status(State::Idle, "系统已恢复，自动认证未启用或已手动断开");
+                }
+            }
+        }
+    }
     pub fn start(&mut self) {
         if let Err(e) = self.refresh_adapters() {
             self.status(State::Failed, e.to_string());
@@ -219,8 +295,10 @@ impl Engine {
         available
     }
     fn authenticate(&mut self) -> Result<()> {
+        ensure!(!self.suspended, "系统休眠中");
         self.retry = None;
         self.invalidate();
+        self.candidates.clear();
         self.config.validate()?;
         ensure!(
             !self.config.username.is_empty() && !self.config.password.is_empty(),
@@ -240,6 +318,11 @@ impl Engine {
         self.invalidate();
         if self.candidates.is_empty() {
             self.snapshot.adapter = None;
+            if self.recovering_resume && Instant::now() < self.startup {
+                self.failed("等待已连接的有线网卡");
+                return Ok(());
+            }
+            self.recovering_resume = false;
             self.status(State::Idle, "等待已连接的有线网卡");
             return Ok(());
         }
@@ -262,14 +345,17 @@ impl Engine {
         Ok(())
     }
     fn failed(&mut self, message: &str) {
+        let mut message = message.to_owned();
+        self.retry = None;
         self.invalidate();
         if !self.candidates.is_empty() {
-            if let Err(e) = self.next_candidate() {
-                self.status(State::Failed, e.to_string());
+            match self.next_candidate() {
+                Ok(()) => return,
+                Err(e) => message = e.to_string(),
             }
-            return;
         }
         if self.manual_disconnect || !self.config.auto_auth {
+            self.recovering_resume = false;
             self.status(State::Failed, message);
             return;
         }
@@ -281,6 +367,7 @@ impl Engine {
             self.retries += 1;
             self.retry = Some(Instant::now() + Duration::from_secs(self.config.retry_interval));
         } else {
+            self.recovering_resume = false;
             self.status(State::Failed, "多次认证失败，请检查 NetID 或网络");
             return;
         }
@@ -380,12 +467,22 @@ impl Engine {
         Ok(())
     }
     fn network_changed(&mut self) -> Result<()> {
+        if self.suspended {
+            return Ok(());
+        }
         let previous_media = self.adapters.iter().any(Adapter::candidate);
         self.refresh_adapters()?;
         let current_media = self.adapters.iter().any(Adapter::candidate);
         if !previous_media && current_media {
-            self.manual_disconnect = false;
+            if !self.preserve_manual_disconnect {
+                self.manual_disconnect = false;
+            }
             self.retries = 0;
+        }
+        // Link/address notifications during NIC initialization must not bypass
+        // the resume settling delay or its bounded driver-recovery backoff.
+        if self.recovering_resume && self.retry.is_some() {
+            return Ok(());
         }
         if let Some(active) = &self.snapshot.adapter {
             if let Some(updated) = self
@@ -443,7 +540,10 @@ impl Engine {
                 }
                 Action::GetConfig => Ok(serde_json::to_value(&self.config)?),
                 Action::Authenticate => {
+                    ensure!(!self.suspended, "系统休眠中");
                     self.manual_disconnect = false;
+                    self.preserve_manual_disconnect = false;
+                    self.recovering_resume = false;
                     self.retries = 0;
                     if let Err(e) = self.authenticate() {
                         self.status(State::Failed, e.to_string());
@@ -499,6 +599,7 @@ impl Engine {
         self.config = config;
         if !self.config.auto_auth {
             self.retry = None;
+            self.recovering_resume = false;
         }
         if credentials_changed {
             self.invalidate();
@@ -507,8 +608,11 @@ impl Engine {
         if (credentials_changed || (enabled && self.snapshot.state != State::Authenticated))
             && self.config.auto_auth
             && !self.manual_disconnect
+            && !self.suspended
         {
-            if let Err(e) = self.authenticate() {
+            if self.recovering_resume {
+                self.retry = Some(Instant::now() + Duration::from_secs(2));
+            } else if let Err(e) = self.authenticate() {
                 self.status(State::Failed, e.to_string());
             }
         }
@@ -516,6 +620,8 @@ impl Engine {
     }
     fn logoff(&mut self) -> Result<()> {
         self.manual_disconnect = true;
+        self.preserve_manual_disconnect |= self.suspended || self.recovering_resume;
+        self.recovering_resume = false;
         self.retry = None;
         self.candidates.clear();
         let sent = if let (Some(session), Some(adapter)) = (&self.session, &self.snapshot.adapter) {
@@ -528,6 +634,10 @@ impl Engine {
         sent
     }
     fn tick(&mut self) {
+        self.drain_power();
+        if self.suspended {
+            return;
+        }
         let now = Instant::now();
         if self.handshake_deadline.is_some_and(|d| d <= now) {
             self.failed("认证超时");
@@ -544,7 +654,11 @@ impl Engine {
         if self.retry.is_some_and(|d| d <= now) {
             self.retry = None;
             if let Err(e) = self.authenticate() {
-                self.status(State::Failed, e.to_string());
+                if self.recovering_resume {
+                    self.failed(&e.to_string());
+                } else {
+                    self.status(State::Failed, e.to_string());
+                }
             }
         }
         if self.update_deadline <= now && !self.snapshot.update.checking {
@@ -555,6 +669,9 @@ impl Engine {
         }
     }
     fn timeout(&self) -> Option<Duration> {
+        if self.suspended {
+            return None;
+        }
         [
             self.retry,
             self.handshake_deadline,
@@ -567,6 +684,9 @@ impl Engine {
         .map(|d| d.saturating_duration_since(Instant::now()))
     }
     pub fn handle(&mut self, event: Event) -> bool {
+        if !matches!(event, Event::Stop) {
+            self.drain_power();
+        }
         match event {
             Event::Stop => {
                 self.invalidate();
@@ -580,14 +700,20 @@ impl Engine {
             }
             Event::CaptureError(g, e) if g == self.generation => self.failed(&e),
             Event::CaptureError(..) => {}
+            Event::PowerChanged => {}
             Event::NetworkChanged => {
                 if let Err(e) = self.network_changed() {
-                    self.status(State::Failed, e.to_string());
+                    if self.recovering_resume {
+                        self.failed(&e.to_string());
+                    } else {
+                        self.status(State::Failed, e.to_string());
+                    }
                 }
             }
             Event::Connectivity(g, success) if g == self.generation => {
                 self.probe = None;
                 if success {
+                    self.recovering_resume = false;
                     self.retries = 0;
                     self.retry = None;
                     self.startup = Instant::now();
@@ -654,7 +780,10 @@ impl Engine {
         true
     }
     pub fn run(&mut self, rx: Receiver<Event>) {
-        self.start();
+        self.drain_power();
+        if !self.suspended && !self.recovering_resume {
+            self.start();
+        }
         loop {
             let received = match self.timeout() {
                 Some(t) => rx.recv_timeout(t),
@@ -869,5 +998,130 @@ mod tests {
         assert_eq!(e.snapshot.state, State::Idle);
         assert!(e.retry.is_none());
         assert!(e.start_deadline.is_none());
+    }
+    #[test]
+    fn power_notifications_survive_a_full_queue_and_coalesce() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        tx.send(Event::NetworkChanged).unwrap();
+        let power = PowerNotifier {
+            pending: AtomicU8::new(0),
+            events: tx,
+        };
+        power.notify(PowerEvent::Suspend);
+        power.notify(PowerEvent::Resume);
+        assert!(matches!(power.take(), Some(PowerEvent::Resume)));
+        assert!(power.take().is_none());
+        rx.recv().unwrap();
+        power.notify(PowerEvent::Resume);
+        power.notify(PowerEvent::Suspend);
+        assert!(matches!(power.take(), Some(PowerEvent::Suspend)));
+    }
+    #[test]
+    fn suspend_invalidates_online_state_and_blocks_old_work() {
+        let mut e = online();
+        let old = e.generation;
+        e.retry = Some(Instant::now());
+        e.handshake_deadline = Some(Instant::now());
+        e.power.notify(PowerEvent::Suspend);
+        // The latch is drained even when the wake marker is behind old traffic.
+        e.handle(Event::Connectivity(old, true));
+        e.handle(Event::Packet(old, server_packet(1, 1, &[])));
+        e.handle(Event::CaptureError(old, "stale capture".into()));
+        e.tick();
+        assert!(e.suspended);
+        assert_eq!(e.snapshot.state, State::Idle);
+        assert!(!e.snapshot.internet);
+        assert!(e.snapshot.authenticated_at.is_none());
+        assert!(e.snapshot.adapter.is_none());
+        assert!(e.retry.is_none());
+        assert!(e.timeout().is_none());
+        assert!(e.authenticate().is_err());
+        let mut config = e.config.clone();
+        config.username = "new-user".into();
+        config.password = "password".into();
+        e.apply_config(config).unwrap();
+        assert_eq!(e.snapshot.state, State::Idle);
+        assert!(e.retry.is_none());
+    }
+    #[test]
+    fn resume_without_suspend_resets_session_and_restarts_grace() {
+        let mut e = online();
+        let old = e.generation;
+        e.retries = 5;
+        e.startup = Instant::now();
+        e.power.notify(PowerEvent::Resume);
+        e.handle(Event::Connectivity(old, true));
+        assert!(!e.snapshot.internet);
+        assert!(e.snapshot.adapter.is_none());
+        assert!(!e.suspended);
+        assert!(e.recovering_resume);
+        assert_eq!(e.retries, 0);
+        assert!(e.startup > Instant::now() + Duration::from_secs(110));
+        assert!(e.retry.unwrap() > Instant::now() + Duration::from_secs(1));
+        // A temporary capture/driver error must retain recovery, rather than
+        // terminating it until the GUI sends another Authenticate command.
+        e.failed("capture driver not ready");
+        assert!(e.retry.is_some());
+        e.retry = Some(Instant::now());
+        // Missing credentials deliberately exercise an early authenticate error.
+        e.tick();
+        assert!(e.retry.is_some());
+        assert_eq!(e.snapshot.state, State::Idle);
+    }
+    #[test]
+    fn resume_adapter_wait_is_bounded_and_online_has_no_retry_timer() {
+        let mut e = engine();
+        e.power.notify(PowerEvent::Resume);
+        e.handle(Event::PowerChanged);
+        e.retry = None;
+        e.next_candidate().unwrap();
+        assert!(e.retry.is_some());
+        e.startup = Instant::now();
+        e.retry = None;
+        e.next_candidate().unwrap();
+        assert!(e.retry.is_none());
+        assert!(!e.recovering_resume);
+        e.power.notify(PowerEvent::Resume);
+        e.handle(Event::PowerChanged);
+        e.handle(Event::Connectivity(e.generation, true));
+        assert!(!e.recovering_resume);
+        assert!(e.retry.is_none());
+        assert!(e.handshake_deadline.is_none());
+        assert!(e.start_deadline.is_none());
+    }
+    #[test]
+    fn resume_respects_manual_disconnect_and_auto_auth_setting() {
+        let mut e = online();
+        e.logoff().unwrap();
+        e.power.notify(PowerEvent::Resume);
+        e.handle(Event::PowerChanged);
+        assert!(e.manual_disconnect);
+        assert!(e.preserve_manual_disconnect);
+        assert!(e.retry.is_none());
+        e = online();
+        e.config.auto_auth = false;
+        e.power.notify(PowerEvent::Resume);
+        e.handle(Event::PowerChanged);
+        assert!(!e.recovering_resume);
+        assert!(e.retry.is_none());
+        assert!(!e.snapshot.internet);
+    }
+    #[test]
+    fn logoff_or_disabling_auto_auth_cancels_resume_recovery() {
+        let mut e = engine();
+        e.power.notify(PowerEvent::Resume);
+        e.handle(Event::PowerChanged);
+        e.logoff().unwrap();
+        assert!(e.retry.is_none());
+        assert!(!e.recovering_resume);
+        assert!(e.preserve_manual_disconnect);
+        e.manual_disconnect = false;
+        e.power.notify(PowerEvent::Resume);
+        e.handle(Event::PowerChanged);
+        let mut config = e.config.clone();
+        config.auto_auth = false;
+        e.apply_config(config).unwrap();
+        assert!(e.retry.is_none());
+        assert!(!e.recovering_resume);
     }
 }
