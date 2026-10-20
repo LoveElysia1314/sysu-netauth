@@ -1,24 +1,13 @@
 @echo off
-chcp 65001 >nul
 setlocal
-set "PYTHONUTF8=1"
 cd /d "%~dp0"
-
-where uv.exe >nul 2>nul
-if errorlevel 1 goto :missing_uv
-
-uv run --no-project --python 3.13 --with-requirements requirements.lock python run.py %*
-set "app_exit=%errorlevel%"
-if not "%app_exit%"=="0" (
-  echo.
-  echo Application failed to start. See the message above.
-  pause
+if exist "dist\sysu_netauth\sysu_netauth_gui.exe" (
+  start "" "dist\sysu_netauth\sysu_netauth_gui.exe" %*
+  exit /b 0
 )
-exit /b %app_exit%
-
-:missing_uv
-echo.
-echo ERROR: uv was not found in PATH.
-echo Install it with: winget install --id astral-sh.uv --exact
-pause
+if exist "target\x86_64-pc-windows-msvc\release\sysu_netauth_gui.exe" (
+  start "" "target\x86_64-pc-windows-msvc\release\sysu_netauth_gui.exe" %*
+  exit /b 0
+)
+echo Build the native client first: powershell -File scripts\build.ps1 -SkipInstaller
 exit /b 1
