@@ -16,7 +16,12 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
-      - if: runner.os == 'Linux'
+      - name: Test isolated Linux networking
+        if: runner.os == 'Linux'
+        env:
+          # Build as the runner user; elevate only the test executable. Ubuntu
+          # runners can restrict the unprivileged user namespaces used locally.
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo -n --
         run: cargo test --locked --test linux_network -- --ignored --nocapture
       - if: runner.os == 'Windows'
         run: ./apps/native/scripts/build.ps1 -SkipInstaller

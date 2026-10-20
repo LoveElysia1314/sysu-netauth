@@ -3,6 +3,11 @@ on: [push, pull_request]
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      # Redirected Windows output can otherwise use cp1252. Keep the parent
+      # build script and its Python subprocesses on the same UTF-8 encoding.
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: utf-8
     defaults:
       run:
         working-directory: apps/python
