@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/netauth"]
+members = ["apps/native"]
 resolver = "2"
 
 [profile.release]
