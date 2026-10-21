@@ -178,7 +178,7 @@ fn verify(path: &Path, gui: bool) -> Result<()> {
         }
     }
     println!(
-        "{}: {} bytes; static CRT; {}",
+        "{}: {} bytes; no external compiler runtime; {}",
         path.file_name().unwrap_or_default().to_string_lossy(),
         pe.bytes.len(),
         if gui {

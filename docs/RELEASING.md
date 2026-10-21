@@ -1,4 +1,4 @@
-# Windows releases
+# Releases
 
 ## Tags and CI
 
@@ -11,16 +11,19 @@ Versions come from Git tags. Rust uses `git-version`; Python uses `setuptools-sc
 | `v0.7.0-beta.2` | `0.7.0-beta.2` | `0.7.0b2` |
 | `v0.7.0-rc.1` | `0.7.0-rc.1` | `0.7.0rc1` |
 
-Commit the release changes, create a tag in one of these formats, and push it. **Windows release installers** builds both applications and creates a draft GitHub release. Prerelease tags produce prereleases. Review installation, upgrade and service operation on Windows before publishing the draft.
+Commit the release changes, create a tag in one of these formats, and push it. **Release packages** builds both applications and creates a draft GitHub release. Prerelease tags produce prereleases. Review installation, upgrade and service operation before publishing the draft.
 
 The workflow can also run manually on a release tag. Existing releases receive the installers without changes to their notes or publication status. Reruns replace assets with matching filenames.
 
 | Application | Installer | Checksums |
 | --- | --- | --- |
 | Rust, MSVC x64 | `SYSUNetAuth_Rust_msvc_x64_Setup_v<version>.exe` | `SHA256SUMS-rust-msvc-x64.txt` |
+| Rust, GNU x64 | `SYSUNetAuth_Rust_gnu_x64_Setup_v<version>.exe` | `SHA256SUMS-rust-gnu-x64.txt` |
 | Python, x64 | `SYSUNetAuth_Python_x64_Setup_v<version>.exe` | `SHA256SUMS-python-x64.txt` |
 
-Each installer also has a ZIP download. Rust builds on Windows and Linux both target the MSVC ABI.
+Each Windows variant also provides a ZIP containing the installer and a separate `SYSUNetAuth_<variant>_Portable_v<version>.zip` containing the application binaries. Python's portable archive includes its runtime dependencies.
+
+Linux x64: `SYSUNetAuth_Rust_linux_x64_v<version>.tar.gz`, with `SHA256SUMS-rust-linux-x64.txt`. The archive includes the CLI, service, systemd unit and installation script.
 
 ## Local packaging
 
@@ -35,8 +38,10 @@ Build the applications using their [Rust](../apps/rust/README.md) or [Python](..
 
 ```powershell
 Copy-Item build/release-version.json apps/rust/dist/sysu_netauth/
+Copy-Item build/release-version.json apps/rust/dist/gnu/sysu_netauth/
 Copy-Item build/release-version.json apps/python/dist/sysu_netauth/
 python scripts/package_windows.py --variant rust --input-dir apps/rust/dist/sysu_netauth
+python scripts/package_windows.py --variant rust --abi gnu --input-dir apps/rust/dist/gnu/sysu_netauth
 python scripts/package_windows.py --variant python --input-dir apps/python/dist/sysu_netauth
 ```
 

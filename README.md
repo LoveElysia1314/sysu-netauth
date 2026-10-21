@@ -9,14 +9,17 @@
 
 ## Windows 安装
 
-从 [Releases](https://github.com/LoveElysia1314/sysu-netauth/releases) 下载对应的 Setup 安装程序：
+从 [Releases](https://github.com/peterrobot/sysu-netauth/releases) 下载对应的 Setup 安装程序：
 
 - `SYSUNetAuth_Rust_msvc_x64_Setup_v<版本>.exe`
+- `SYSUNetAuth_Rust_gnu_x64_Setup_v<版本>.exe`
 - `SYSUNetAuth_Python_x64_Setup_v<版本>.exe`
 
 两个版本均需 [Npcap](https://npcap.com/#download)。安装后打开设置窗口，填写 NetID 和密码并认证。启用「服务独立运行」后，退出 GUI 仍会保持认证。Rust 版支持睡眠、休眠后自动重认证。
 
 两个版本共用 Windows 服务与设置目录；切换前请退出 GUI、停止服务并备份 `%ProgramData%\SYSUNetAuth`。详见 [版本切换](docs/ARCHITECTURE.md)。
+
+发行页同时提供 Windows 便携二进制 ZIP、Linux x64 程序包和 SHA-256 校验文件。
 
 ## 从源码构建
 

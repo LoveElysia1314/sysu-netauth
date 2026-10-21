@@ -38,7 +38,13 @@ def find_compiler() -> Path:
     raise FileNotFoundError("Install Inno Setup 6 or pass --compiler PATH/ISCC.exe")
 
 
-def package(variant: str, input_dir: Path, output_dir: Path, compiler: Path) -> list[Path]:
+def package(variant: str, input_dir: Path, output_dir: Path, compiler: Path, *, abi: str | None = None) -> list[Path]:
+    if variant == "rust":
+        abi = abi or "msvc"
+        if abi not in {"msvc", "gnu"}:
+            raise ValueError(f"Unsupported Rust ABI: {abi}")
+    elif abi is not None:
+        raise ValueError("--abi applies only to Rust builds")
     input_dir = input_dir.resolve(strict=True)
     output_dir = output_dir.resolve()
     required = ["sysu_netauth.exe", "sysu_netauth_service.exe"]
@@ -67,7 +73,7 @@ def package(variant: str, input_dir: Path, output_dir: Path, compiler: Path) -> 
         version = actual["version"]
         script = app_root / "scripts/setup.template.iss"
         core = re.match(r"\d+\.\d+\.\d+", version)[0]
-        defines = [f"/DMyAppVersion={version}", f"/DMyAppFileVersion={core}", f"/DAppSourceDir={input_dir}"]
+        defines = [f"/DMyAppVersion={version}", f"/DMyAppFileVersion={core}", f"/DMyAppAbi={abi}", f"/DAppSourceDir={input_dir}"]
     else:
         # Reuse the Python installer generator without running PyInstaller.
         build = runpy.run_path(str(ROOT / "apps/python/scripts/build.py"))
@@ -83,17 +89,16 @@ def package(variant: str, input_dir: Path, output_dir: Path, compiler: Path) -> 
     try:
         if not re.fullmatch(r"\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+|(?:a|b|rc)\d+)?", version):
             raise ValueError(f"Unsupported installer version: {version}")
-        # Both current Rust build paths target x86_64-pc-windows-msvc. The
-        # producing host (Windows or Linux) does not change that ABI.
-        label = "Rust_msvc_x64" if variant == "rust" else "Python_x64"
+        label = f"Rust_{abi}_x64" if variant == "rust" else "Python_x64"
         identifier = label.lower().replace("_", "-")
         basename = f"SYSUNetAuth_{label}_Setup_v{version}"
         output_dir.mkdir(parents=True, exist_ok=True)
         setup = output_dir / f"{basename}.exe"
         archive = output_dir / f"{basename}.zip"
+        portable = output_dir / f"SYSUNetAuth_{label}_Portable_v{version}.zip"
         checksums = output_dir / f"SHA256SUMS-{identifier}.txt"
         # A compiler that fails or emits no setup must never reuse stale output.
-        for path in (setup, archive, checksums):
+        for path in (setup, archive, portable, checksums):
             path.unlink(missing_ok=True)
         subprocess.run(
             [str(compiler), f"/O{output_dir}", f"/F{basename}", *defines, str(script)],
@@ -104,12 +109,18 @@ def package(variant: str, input_dir: Path, output_dir: Path, compiler: Path) -> 
             raise FileNotFoundError(f"Inno Setup did not produce {setup}")
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
             bundle.write(setup, setup.name)
+        payload = [input_dir / name for name in required] if variant == "rust" else sorted(
+            path for path in input_dir.rglob("*") if path.is_file()
+        )
+        with zipfile.ZipFile(portable, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            for path in payload:
+                bundle.write(path, (Path("sysu_netauth") / path.relative_to(input_dir)).as_posix())
         hashes = []
-        for path in (setup, archive):
+        for path in (setup, archive, portable):
             with path.open("rb") as stream:
                 hashes.append(f"{hashlib.file_digest(stream, 'sha256').hexdigest()}  {path.name}\n")
         checksums.write_text("".join(hashes), encoding="utf-8")
-        return [setup, archive, checksums]
+        return [setup, archive, portable, checksums]
     finally:
         if generated_script is not None:
             generated_script.unlink(missing_ok=True)
@@ -118,12 +129,13 @@ def package(variant: str, input_dir: Path, output_dir: Path, compiler: Path) -> 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--variant", required=True, choices=("rust", "python"))
+    parser.add_argument("--abi", choices=("msvc", "gnu"), help="Rust compiler ABI (default: msvc)")
     parser.add_argument("--input-dir", required=True, type=Path, help="Directory containing the built EXEs")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist/windows-installers")
     parser.add_argument("--compiler", type=Path, help="Inno Setup compiler (auto-detected by default)")
     args = parser.parse_args()
     compiler = args.compiler.resolve(strict=True) if args.compiler else find_compiler()
-    for path in package(args.variant, args.input_dir, args.output_dir, compiler):
+    for path in package(args.variant, args.input_dir, args.output_dir, compiler, abi=args.abi):
         print(path)
 
 

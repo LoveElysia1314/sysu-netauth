@@ -80,18 +80,30 @@ class WindowsPackagingTests(unittest.TestCase):
         (output / f"{name}.exe").write_bytes(b"MZ compiled setup fixture")
         return subprocess.CompletedProcess(command, 0)
 
-    def test_both_installers_have_distinct_versions_zip_contents_and_checksums(self):
+    def test_all_windows_variants_have_installers_portable_binaries_and_checksums(self):
         self.python_version = PYTHON_VERSION
         with patch.object(packaging.subprocess, "run", side_effect=self.compile) as compile_setup:
             rust = packaging.package("rust", self.source, self.output, Path("ISCC.exe"))
+            gnu = packaging.package("rust", self.source, self.output, Path("ISCC.exe"), abi="gnu")
             python = packaging.package("python", self.source, self.output, Path("ISCC.exe"))
-        self.assertEqual(compile_setup.call_count, 2)
+        self.assertEqual(compile_setup.call_count, 3)
         self.assertEqual(rust[0].name, f"SYSUNetAuth_Rust_msvc_x64_Setup_v{RUST_VERSION}.exe")
         self.assertEqual(python[0].name, f"SYSUNetAuth_Python_x64_Setup_v{PYTHON_VERSION}.exe")
-        for setup, archive, checksums in (rust, python):
+        self.assertEqual(gnu[0].name, f"SYSUNetAuth_Rust_gnu_x64_Setup_v{RUST_VERSION}.exe")
+        self.assertTrue(any("/DMyAppAbi=gnu" in call.args[0] for call in compile_setup.call_args_list))
+        for setup, archive, portable, checksums in (rust, gnu, python):
             with zipfile.ZipFile(archive) as bundle:
                 self.assertEqual(bundle.namelist(), [setup.name])
                 self.assertEqual(bundle.read(setup.name), setup.read_bytes())
+            with zipfile.ZipFile(portable) as bundle:
+                self.assertEqual(bundle.read("sysu_netauth/sysu_netauth.exe"), (self.source / "sysu_netauth.exe").read_bytes())
+                self.assertIn("sysu_netauth/sysu_netauth_service.exe", bundle.namelist())
+                if "Python" in portable.name:
+                    self.assertIn("sysu_netauth/_internal/python313.dll", bundle.namelist())
+                else:
+                    self.assertEqual(len(bundle.namelist()), 3)
+                    self.assertIn("sysu_netauth/sysu_netauth_gui.exe", bundle.namelist())
+            self.assertEqual(len(checksums.read_text().splitlines()), 3)
             for line in checksums.read_text(encoding="utf-8").splitlines():
                 digest, name = line.split("  ")
                 self.assertEqual(digest, hashlib.sha256((self.output / name).read_bytes()).hexdigest())
@@ -106,8 +118,10 @@ class WindowsPackagingTests(unittest.TestCase):
         self.python_version = "0.7.0a0"
         with patch.object(packaging.subprocess, "run", side_effect=self.compile):
             rust = packaging.package("rust", self.source, self.output, Path("ISCC.exe"))
+            gnu = packaging.package("rust", self.source, self.output, Path("ISCC.exe"), abi="gnu")
             python = packaging.package("python", self.source, self.output, Path("ISCC.exe"))
         self.assertIn("_v0.7.0-alpha.0.exe", rust[0].name)
+        self.assertIn("_v0.7.0-alpha.0.exe", gnu[0].name)
         self.assertIn("_v0.7.0a0.exe", python[0].name)
         (self.source / "release-version.json").write_text(json.dumps(info | {"commit": "another-commit"}), encoding="utf-8")
         with patch.object(packaging.subprocess, "run") as compile_setup:
@@ -127,16 +141,17 @@ class WindowsPackagingTests(unittest.TestCase):
 
     def test_compiler_failure_cannot_reuse_stale_installer(self):
         self.output.mkdir()
-        for variant, label, version in (
-            ("rust", "Rust_msvc_x64", RUST_VERSION),
-            ("python", "Python_x64", PYTHON_VERSION),
+        for variant, abi, label, version in (
+            ("rust", "msvc", "Rust_msvc_x64", RUST_VERSION),
+            ("rust", "gnu", "Rust_gnu_x64", RUST_VERSION),
+            ("python", None, "Python_x64", PYTHON_VERSION),
         ):
             with self.subTest(variant=variant):
                 stale = self.output / f"SYSUNetAuth_{label}_Setup_v{version}.exe"
                 stale.write_bytes(b"stale setup")
                 with patch.object(packaging.subprocess, "run", side_effect=subprocess.CalledProcessError(2, "ISCC.exe")):
                     with self.assertRaises(subprocess.CalledProcessError):
-                        packaging.package(variant, self.source, self.output, Path("ISCC.exe"))
+                        packaging.package(variant, self.source, self.output, Path("ISCC.exe"), abi=abi)
                 self.assertFalse(stale.exists())
                 self.assertFalse((self.root / "apps/python/scripts/setup.iss").exists())
 
@@ -144,6 +159,14 @@ class WindowsPackagingTests(unittest.TestCase):
         with patch.object(packaging.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)):
             with self.assertRaisesRegex(FileNotFoundError, "did not produce"):
                 packaging.package("rust", self.source, self.output, Path("ISCC.exe"))
+
+    def test_invalid_or_misapplied_abi_is_rejected_before_compilation(self):
+        with patch.object(packaging.subprocess, "run") as compile_setup:
+            with self.assertRaisesRegex(ValueError, "Unsupported Rust ABI"):
+                packaging.package("rust", self.source, self.output, Path("ISCC.exe"), abi="unknown")
+            with self.assertRaisesRegex(ValueError, "only to Rust"):
+                packaging.package("python", self.source, self.output, Path("ISCC.exe"), abi="gnu")
+            compile_setup.assert_not_called()
 
 
 if __name__ == "__main__":
