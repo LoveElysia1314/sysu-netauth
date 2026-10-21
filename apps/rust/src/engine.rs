@@ -10,11 +10,38 @@ use serde::{Deserialize, Serialize};
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
+
+const RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Callbacks latch a condition before attempting a bounded-queue wakeup.
+/// A full queue must not lose a link change or a service stop request.
+pub struct Signal {
+    pending: AtomicBool,
+    events: SyncSender<Event>,
+    wake: fn() -> Event,
+}
+impl Signal {
+    pub fn new(events: SyncSender<Event>, wake: fn() -> Event) -> Self {
+        Self {
+            pending: AtomicBool::new(false),
+            events,
+            wake,
+        }
+    }
+    pub fn notify(&self) {
+        if !self.pending.swap(true, Ordering::AcqRel) {
+            let _ = self.events.try_send((self.wake)());
+        }
+    }
+    pub fn take(&self) -> bool {
+        self.pending.swap(false, Ordering::AcqRel)
+    }
+}
 
 pub enum Event {
     Packet(u64, Vec<u8>),
@@ -94,6 +121,8 @@ pub struct Engine {
     cache: Cache,
     events: SyncSender<Event>,
     power: Arc<PowerNotifier>,
+    network: Arc<Signal>,
+    stop: Arc<Signal>,
     suspended: bool,
     recovering_resume: bool,
     preserve_manual_disconnect: bool,
@@ -112,16 +141,19 @@ pub struct Engine {
     startup_retry: usize,
     handshake_deadline: Option<Instant>,
     start_deadline: Option<Instant>,
-    renewing: bool,
     subscribers: Vec<Subscription>,
     update_deadline: Instant,
     last_manual_update: Option<Instant>,
+    reconcile_deadline: Instant,
+    config_version: Option<(SystemTime, u64)>,
+    config_error: Option<String>,
 }
 impl Engine {
     pub fn paths(&self) -> &Paths {
         &self.paths
     }
     pub fn new(paths: Paths, events: SyncSender<Event>) -> Result<Self> {
+        let initial_version = Self::file_version(&paths);
         let loaded = config::load(&paths);
         let (config, error) = match loaded {
             Ok(c) => (c, None),
@@ -134,6 +166,8 @@ impl Engine {
         let mut update: Update =
             config::read(&paths.state.join("update_state.json")).unwrap_or_default();
         update.checking = false;
+        let config_version = error.is_none().then_some(initial_version).flatten();
+        let config_error = error.clone();
         let now = Instant::now();
         let delay = if update.next_check_at > config::now() {
             update
@@ -159,6 +193,8 @@ impl Engine {
                 pending: AtomicU8::new(0),
                 events: events.clone(),
             }),
+            network: Arc::new(Signal::new(events.clone(), || Event::NetworkChanged)),
+            stop: Arc::new(Signal::new(events.clone(), || Event::Stop)),
             events,
             suspended: false,
             recovering_resume: false,
@@ -178,11 +214,61 @@ impl Engine {
             startup_retry: 0,
             handshake_deadline: None,
             start_deadline: None,
-            renewing: false,
             subscribers: Vec::new(),
             update_deadline: now + Duration::from_secs(delay),
             last_manual_update: None,
+            reconcile_deadline: now + RECONCILE_INTERVAL,
+            config_version,
+            config_error,
         })
+    }
+    fn file_version(paths: &Paths) -> Option<(SystemTime, u64)> {
+        let metadata = std::fs::metadata(&paths.config).ok()?;
+        Some((metadata.modified().ok()?, metadata.len()))
+    }
+    fn reload_changed_config(&mut self) {
+        let Some(version) = Self::file_version(&self.paths) else {
+            // Keep known-good credentials across a replacement or a temporary
+            // sharing/access failure. A missing file is not an empty config.
+            return;
+        };
+        if self.config_error.is_none() && self.config_version == Some(version) {
+            return;
+        }
+        match config::load(&self.paths) {
+            Ok(config) => {
+                if let Err(e) = self.apply_config(config) {
+                    self.failed(&e.to_string());
+                }
+                // Record the pre-read version: if a writer raced the read, the
+                // next reconciliation must read the newer file again.
+                self.config_version = Some(version);
+                self.config_error = None;
+            }
+            Err(e) => {
+                let message = e.to_string();
+                if self.config_error.as_ref() != Some(&message) {
+                    crate::diagnostics::record(
+                        &self.paths,
+                        &format!("config reload failed; retaining current settings: {message}"),
+                    );
+                }
+                self.config_error = Some(message);
+            }
+        }
+    }
+    pub fn network_notifier(&self) -> Arc<Signal> {
+        self.network.clone()
+    }
+    pub fn stop_notifier(&self) -> Arc<Signal> {
+        self.stop.clone()
+    }
+    fn drain_network(&mut self) {
+        if self.network.take() {
+            if let Err(e) = self.network_changed() {
+                self.failed(&e.to_string());
+            }
+        }
     }
     fn publish(&mut self) {
         self.subscribers.retain(|s| {
@@ -215,7 +301,6 @@ impl Engine {
         self.peer = None;
         self.handshake_deadline = None;
         self.start_deadline = None;
-        self.renewing = false;
     }
     pub fn power_notifier(&self) -> Arc<PowerNotifier> {
         self.power.clone()
@@ -253,12 +338,12 @@ impl Engine {
     }
     pub fn start(&mut self) {
         if let Err(e) = self.refresh_adapters() {
-            self.status(State::Failed, e.to_string());
+            self.failed(&e.to_string());
             return;
         }
         if self.config.auto_auth {
             if let Err(e) = self.authenticate() {
-                self.status(State::Failed, e.to_string());
+                self.failed(&e.to_string());
             }
         }
     }
@@ -346,8 +431,17 @@ impl Engine {
     }
     fn failed(&mut self, message: &str) {
         let mut message = message.to_owned();
+        let was_online = self.snapshot.state == State::Authenticated;
         self.retry = None;
         self.invalidate();
+        if was_online {
+            // A lost established session deserves prompt recovery on the saved
+            // adapter, rather than an old candidate queue or a full retry interval.
+            self.candidates.clear();
+            self.retries = 0;
+            self.startup_retry = 0;
+            self.startup = Instant::now() + Duration::from_secs(60);
+        }
         if !self.candidates.is_empty() {
             match self.next_candidate() {
                 Ok(()) => return,
@@ -384,47 +478,59 @@ impl Engine {
             return Ok(());
         };
         if packet.source == adapter.mac
+            || packet.source == [0; 6]
+            || packet.source[0] & 1 != 0
             || (packet.destination != adapter.mac && packet.destination != protocol::PAE)
         {
             return Ok(());
         }
-        if let Some(peer) = self.peer {
-            if peer != packet.source {
-                return Ok(());
-            }
-        } else if packet.code == 1 {
-            self.peer = Some(packet.source);
-        } else {
+        let peer_changed = self.peer.is_some_and(|peer| peer != packet.source);
+        let online = self.snapshot.state == State::Authenticated || self.probe.is_some();
+        // A switch can change its EAP source during online reauthentication.
+        // Adopt it only after answering a valid Request, never on an unsolicited
+        // Success/Failure from another source.
+        if (peer_changed && !(online && packet.code == 1))
+            || (self.peer.is_none() && packet.code != 1)
+        {
             return Ok(());
         }
         if packet.code == 1 {
-            let destination = if self.snapshot.state == State::Authenticated || self.probe.is_some()
-            {
-                protocol::PAE
-            } else {
-                packet.source
-            };
-            if let Some(response) = protocol::answer(
+            let destination = if online { protocol::PAE } else { packet.source };
+            let response = protocol::answer(
                 adapter.mac,
                 destination,
                 &packet,
                 &self.username,
                 &self.password,
-            )? {
+            );
+            let response = match response {
+                Err(_) if peer_changed => return Ok(()),
+                other => other?,
+            };
+            if let Some(response) = response {
                 if let Some(session) = &self.session {
                     session.capture.send(&response)?;
                 }
-                self.start_deadline = None;
-                if packet.kind == Some(4) && self.snapshot.state == State::Authenticated {
-                    self.renewing = true;
-                    self.handshake_deadline = Some(Instant::now() + Duration::from_secs(10));
+                if peer_changed {
+                    crate::diagnostics::record(
+                        &self.paths,
+                        &format!(
+                            "online authenticator changed to {}",
+                            protocol::mac_text(packet.source)
+                        ),
+                    );
                 }
+                self.peer = Some(packet.source);
+                self.start_deadline = None;
+                // Online requests are keepalives as well as full reauthentication.
+                // Like the Python listener, keep answering without requiring a
+                // terminal Success for each probe. Only the initial handshake
+                // has a deadline; an explicit Failure still restarts authentication.
             }
         } else if packet.code == 3 {
             self.handshake_deadline = None;
             self.start_deadline = None;
             if self.snapshot.state == State::Authenticated {
-                self.renewing = false;
                 return Ok(());
             }
             if self.probe.is_none() {
@@ -450,7 +556,7 @@ impl Engine {
                 for round in 0..3 {
                     for target in [[119, 29, 29, 29], [114, 114, 114, 114]] {
                         if platform::ping(target.into(), &cancel) {
-                            let _ = tx.try_send(Event::Connectivity(generation, true));
+                            platform::deliver(&tx, Event::Connectivity(generation, true), &cancel);
                             return;
                         }
                     }
@@ -458,7 +564,7 @@ impl Engine {
                         return;
                     }
                 }
-                let _ = tx.try_send(Event::Connectivity(generation, false));
+                platform::deliver(&tx, Event::Connectivity(generation, false), &cancel);
             })?;
         self.probe = Some(Probe {
             stop,
@@ -471,7 +577,15 @@ impl Engine {
             return Ok(());
         }
         let previous_media = self.adapters.iter().any(Adapter::candidate);
-        self.refresh_adapters()?;
+        if let Err(e) = self.refresh_adapters() {
+            // An enumeration failure is not evidence that the active link has
+            // gone away. Preserve its capture and let the next scan try again.
+            crate::diagnostics::record(
+                &self.paths,
+                &format!("adapter refresh failed; retaining current session: {e}"),
+            );
+            return Ok(());
+        }
         let current_media = self.adapters.iter().any(Adapter::candidate);
         if !previous_media && current_media {
             if !self.preserve_manual_disconnect {
@@ -494,14 +608,22 @@ impl Engine {
                     self.snapshot.adapter = Some(updated.clone());
                     self.publish();
                 }
-                return Ok(());
+                if self.session.is_some() {
+                    return Ok(());
+                }
+            } else {
+                self.invalidate();
+                self.snapshot.adapter = None;
+                self.retry = None;
+                self.status(State::Idle, "网卡已断开");
             }
-            self.invalidate();
-            self.snapshot.adapter = None;
-            self.retry = None;
-            self.status(State::Idle, "网卡已断开");
         }
-        if self.config.auto_auth && !self.manual_disconnect && self.session.is_none() {
+        if self.config.auto_auth
+            && !self.manual_disconnect
+            && self.session.is_none()
+            && self.retry.is_none()
+            && (self.retries < 5 || Instant::now() < self.startup)
+        {
             self.authenticate()?;
         }
         Ok(())
@@ -525,7 +647,9 @@ impl Engine {
         std::thread::Builder::new()
             .name("update-download".into())
             .spawn(move || {
-                let _ = tx.try_send(Event::Update(update::fetch().map_err(|e| e.to_string())));
+                // This worker is detached, so a blocking send cannot deadlock
+                // engine shutdown. Receiver closure releases it on service exit.
+                let _ = tx.send(Event::Update(update::fetch().map_err(|e| e.to_string())));
             })?;
         Ok(())
     }
@@ -634,11 +758,22 @@ impl Engine {
         sent
     }
     fn tick(&mut self) {
+        if self.stop.pending.load(Ordering::Acquire) {
+            return;
+        }
         self.drain_power();
+        self.drain_network();
         if self.suspended {
             return;
         }
         let now = Instant::now();
+        if self.reconcile_deadline <= now {
+            self.reload_changed_config();
+            if let Err(e) = self.network_changed() {
+                self.failed(&e.to_string());
+            }
+            self.reconcile_deadline = Instant::now() + RECONCILE_INTERVAL;
+        }
         if self.handshake_deadline.is_some_and(|d| d <= now) {
             self.failed("认证超时");
         }
@@ -654,11 +789,7 @@ impl Engine {
         if self.retry.is_some_and(|d| d <= now) {
             self.retry = None;
             if let Err(e) = self.authenticate() {
-                if self.recovering_resume {
-                    self.failed(&e.to_string());
-                } else {
-                    self.status(State::Failed, e.to_string());
-                }
+                self.failed(&e.to_string());
             }
         }
         if self.update_deadline <= now && !self.snapshot.update.checking {
@@ -676,6 +807,7 @@ impl Engine {
             self.retry,
             self.handshake_deadline,
             self.start_deadline,
+            Some(self.reconcile_deadline),
             (!self.snapshot.update.checking).then_some(self.update_deadline),
         ]
         .into_iter()
@@ -684,8 +816,16 @@ impl Engine {
         .map(|d| d.saturating_duration_since(Instant::now()))
     }
     pub fn handle(&mut self, event: Event) -> bool {
+        if self.stop.take() {
+            self.invalidate();
+            self.status(State::Stopped, "服务已停止");
+            return false;
+        }
         if !matches!(event, Event::Stop) {
             self.drain_power();
+            if !matches!(event, Event::NetworkChanged) {
+                self.drain_network();
+            }
         }
         match event {
             Event::Stop => {
@@ -702,18 +842,16 @@ impl Engine {
             Event::CaptureError(..) => {}
             Event::PowerChanged => {}
             Event::NetworkChanged => {
+                self.network.take();
                 if let Err(e) = self.network_changed() {
-                    if self.recovering_resume {
-                        self.failed(&e.to_string());
-                    } else {
-                        self.status(State::Failed, e.to_string());
-                    }
+                    self.failed(&e.to_string());
                 }
             }
             Event::Connectivity(g, success) if g == self.generation => {
                 self.probe = None;
                 if success {
                     self.recovering_resume = false;
+                    self.candidates.clear();
                     self.retries = 0;
                     self.retry = None;
                     self.startup = Instant::now();
@@ -780,6 +918,10 @@ impl Engine {
         true
     }
     pub fn run(&mut self, rx: Receiver<Event>) {
+        if self.stop.pending.load(Ordering::Acquire) {
+            self.handle(Event::Stop);
+            return;
+        }
         self.drain_power();
         if !self.suspended && !self.recovering_resume {
             self.start();
@@ -822,6 +964,80 @@ mod tests {
             tx,
         )
         .unwrap()
+    }
+    #[test]
+    fn network_signals_are_latched_and_coalesced_on_a_full_queue() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        tx.send(Event::PowerChanged).unwrap();
+        let signal = Signal::new(tx, || Event::NetworkChanged);
+        signal.notify();
+        signal.notify();
+        assert!(signal.take());
+        assert!(!signal.take());
+        assert!(matches!(rx.recv().unwrap(), Event::PowerChanged));
+        for _ in 0..100 {
+            signal.notify();
+        }
+        assert!(matches!(rx.recv().unwrap(), Event::NetworkChanged));
+        assert!(rx.try_recv().is_err());
+        assert!(signal.take());
+    }
+    #[test]
+    fn stop_request_has_priority_even_when_its_wakeup_cannot_be_queued() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let mut e = Engine::new(engine().paths, tx.clone()).unwrap();
+        tx.send(Event::Packet(0, vec![])).unwrap();
+        e.stop_notifier().notify();
+        assert!(!e.handle(rx.recv().unwrap()));
+        assert_eq!(e.snapshot.state, State::Stopped);
+    }
+    #[test]
+    fn startup_config_read_failure_can_recover_without_gui() {
+        let initial = engine();
+        config::save(&initial.paths, &initial.config).unwrap();
+        std::fs::write(&initial.paths.config, b"{ incomplete").unwrap();
+        let mut e = Engine::new(initial.paths.clone(), initial.events.clone()).unwrap();
+        assert!(e.config_error.is_some());
+        let config = Config {
+            username: "recovered-user".into(),
+            auto_auth: false,
+            ..Config::default()
+        };
+        config::save(&e.paths, &config).unwrap();
+        e.reload_changed_config();
+        assert_eq!(e.config, config);
+        assert!(e.config_error.is_none());
+        assert!(e.config_version.is_some());
+        std::fs::remove_dir_all(&e.paths.state).unwrap();
+    }
+    #[test]
+    fn bad_or_missing_config_keeps_online_credentials_and_valid_reads_do_not_rewrite() {
+        let mut e = online();
+        let config = Config {
+            username: "known-user".into(),
+            password: "password".into(),
+            auto_auth: false,
+            ..Config::default()
+        };
+        config::save(&e.paths, &config).unwrap();
+        e.config = config.clone();
+        e.config_version = Engine::file_version(&e.paths);
+        std::fs::write(&e.paths.config, [0xff, 0xff]).unwrap();
+        e.reload_changed_config();
+        assert_eq!(e.config, config);
+        assert_eq!(e.snapshot.state, State::Authenticated);
+        assert!(e.config_error.is_some());
+        std::fs::remove_file(&e.paths.config).unwrap();
+        e.reload_changed_config();
+        assert_eq!(e.config, config);
+        assert_eq!(e.snapshot.state, State::Authenticated);
+        config::save(&e.paths, &config).unwrap();
+        let before = std::fs::read(&e.paths.config).unwrap();
+        e.reload_changed_config();
+        assert_eq!(before, std::fs::read(&e.paths.config).unwrap());
+        assert!(e.config_error.is_none());
+        assert_eq!(e.snapshot.state, State::Authenticated);
+        std::fs::remove_dir_all(&e.paths.state).unwrap();
     }
     #[test]
     fn stale_results_and_manual_disconnect() {
@@ -925,7 +1141,7 @@ mod tests {
             e.packet(e.generation, &server_packet(1, 1, &[])).unwrap();
             e.packet(e.generation, &server_packet(1, 4, &challenge))
                 .unwrap();
-            assert!(e.handshake_deadline.is_some());
+            assert!(e.handshake_deadline.is_none());
             e.packet(e.generation, &server_packet(3, 0, &[])).unwrap();
             assert!(e.handshake_deadline.is_none());
             assert_eq!(e.snapshot.state, State::Authenticated);
@@ -948,6 +1164,84 @@ mod tests {
         assert_eq!(e.snapshot.state, State::Idle);
         assert!(!e.snapshot.internet);
         assert!(e.retry.is_none());
+    }
+    #[test]
+    fn online_probes_without_success_do_not_expire_the_connection() {
+        let mut e = online();
+        let generation = e.generation;
+        let authenticated_at = e.snapshot.authenticated_at;
+        let mut challenge = vec![16];
+        challenge.extend(0..16);
+        for _ in 0..3 {
+            e.packet(generation, &server_packet(1, 1, &[])).unwrap();
+            e.packet(generation, &server_packet(1, 4, &challenge))
+                .unwrap();
+            // The initial handshake timer would force a disconnect here even
+            // though an online probe does not necessarily receive EAP-Success.
+            assert!(e.handshake_deadline.is_none());
+            e.tick();
+            assert_eq!(e.snapshot.state, State::Authenticated);
+            assert_eq!(e.snapshot.authenticated_at, authenticated_at);
+            assert_eq!(e.generation, generation);
+            assert!(e.retry.is_none());
+        }
+    }
+    #[test]
+    fn online_authenticator_can_change_only_through_a_valid_request() {
+        let mut e = online();
+        let generation = e.generation;
+        let mut raw = server_packet(1, 99, &[]);
+        raw[6..12].copy_from_slice(&[4; 6]);
+        e.packet(generation, &raw).unwrap();
+        assert_eq!(e.peer, Some([2; 6]));
+        raw = server_packet(1, 4, &[16, 1]);
+        raw[6..12].copy_from_slice(&[4; 6]);
+        e.packet(generation, &raw).unwrap();
+        assert_eq!(e.peer, Some([2; 6]));
+        raw = server_packet(1, 1, &[]);
+        raw[6..12].copy_from_slice(&[4; 6]);
+        e.packet(generation, &raw).unwrap();
+        assert_eq!(e.peer, Some([4; 6]));
+        e.packet(generation, &server_packet(4, 0, &[])).unwrap();
+        assert_eq!(e.snapshot.state, State::Authenticated);
+        assert_eq!(e.generation, generation);
+        raw = server_packet(4, 0, &[]);
+        raw[6..12].copy_from_slice(&[4; 6]);
+        e.packet(generation, &raw).unwrap();
+        assert_eq!(e.snapshot.state, State::Idle);
+        assert!(e.retry.is_some());
+    }
+    #[test]
+    fn automatic_retry_errors_keep_the_retry_schedule_without_gui() {
+        let mut e = online();
+        e.snapshot.state = State::Authenticating;
+        e.startup = Instant::now();
+        e.failed("capture temporarily unavailable");
+        assert_eq!(e.retries, 1);
+        e.retry = Some(Instant::now());
+        // Missing configured credentials exercise authenticate's early-error
+        // path without opening a real capture handle on the test host.
+        e.tick();
+        assert_eq!(e.snapshot.state, State::Idle);
+        assert_eq!(e.retries, 2);
+        assert!(e.retry.is_some());
+        assert!(e.session.is_none());
+        e.logoff().unwrap();
+        e.tick();
+        assert!(e.retry.is_none());
+    }
+    #[test]
+    fn lost_established_session_recovers_promptly_without_stale_candidates() {
+        let mut e = online();
+        e.startup = Instant::now();
+        e.retries = 5;
+        e.candidates.push(Adapter::default());
+        e.failed("EAP session lost");
+        assert_eq!(e.snapshot.state, State::Idle);
+        assert!(e.candidates.is_empty());
+        assert_eq!(e.retries, 0);
+        assert_eq!(e.startup_retry, 1);
+        assert!(e.retry.unwrap() <= Instant::now() + Duration::from_secs(3));
     }
     #[test]
     fn reachability_failure_prevents_authenticated_status() {
@@ -992,7 +1286,7 @@ mod tests {
         assert_eq!(e.snapshot.state, State::Failed);
     }
     #[test]
-    fn no_adapters_waits_for_notifications_without_retry_polling() {
+    fn no_adapters_waits_without_spending_authentication_retries() {
         let mut e = engine();
         e.next_candidate().unwrap();
         assert_eq!(e.snapshot.state, State::Idle);
