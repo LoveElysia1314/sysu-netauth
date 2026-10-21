@@ -33,6 +33,7 @@ class WindowsPackagingTests(unittest.TestCase):
             "apps/rust/Cargo.toml",
             "Cargo.lock",
             "apps/rust/scripts/setup.template.iss",
+            "apps/rust/scripts/npcap.iss",
             "apps/python/scripts/build.py",
             "apps/python/pyproject.toml",
             "apps/python/scripts/setup.template.iss",
