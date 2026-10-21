@@ -28,7 +28,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-          cache: pip
+          # Ordinary Windows jobs only run standard-library installer tests.
+          cache: ${{ inputs.release_tag != '' && 'pip' || '' }}
           cache-dependency-path: requirements-build.txt
       - if: inputs.release_tag != ''
         run: python -m pip install -r requirements-build.txt
