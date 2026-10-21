@@ -13,22 +13,22 @@ OutputBaseFilename=installer-process-check
 [Code]
 #include "../../apps/rust/scripts/process.iss"
 
-#ifndef TestPrefix
-  #define TestPrefix ""
-#endif
-
 function InitializeSetup: Boolean;
 var
   Code: Integer;
   Started: Int64;
+  ChildArgs: String;
 begin
+  { Quote here: embedded quotes in ISCC /D arguments are parsed differently
+    from the Windows C runtime convention used by Python subprocess. }
+  ChildArgs := '"{#TestScript}" ';
   Started := SetupTicks;
-  if RunSetupCommand('{#TestCommand}', '{#TestPrefix} hang', 1, Code) or
+  if RunSetupCommand('{#TestCommand}', ChildArgs + 'hang', 1, Code) or
     (Code <> 1460) then RaiseException('Hung process was not timed out');
   if SetupTicks - Started > 5000 then RaiseException('Process timeout was not bounded');
-  if not RunSetupCommand('{#TestCommand}', '{#TestPrefix} stdin', 5, Code) or
+  if not RunSetupCommand('{#TestCommand}', ChildArgs + 'stdin', 5, Code) or
     (Code <> 0) then RaiseException('Child stdin did not close immediately');
-  if not RunSetupCommand('{#TestCommand}', '{#TestPrefix} exit', 5, Code) or
+  if not RunSetupCommand('{#TestCommand}', ChildArgs + 'exit', 5, Code) or
     (Code <> 7) then RaiseException('Child exit code was lost');
   if RunSetupCommand(ExpandConstant('{tmp}\missing-netauth-process.exe'), '', 1, Code) or
     (Code <> 2) then RaiseException('Missing executable error was lost');
