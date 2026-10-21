@@ -22,13 +22,24 @@ pub fn run(paths: Paths) -> Result<()> {
         }
     }
     let (tx, rx) = std::sync::mpsc::sync_channel(256);
+    let mut engine = Engine::new(paths, tx.clone())?;
     #[cfg(unix)]
-    platform::signal_thread(tx.clone())?;
+    platform::signal_thread(engine.stop_notifier())?;
     #[cfg(windows)]
-    platform::register_stop_sender(tx.clone());
-    let _server = ipc::start(&paths, tx.clone())?;
-    let _monitor = platform::monitor(tx.clone())?;
-    let mut engine = Engine::new(paths, tx)?;
+    platform::register_stop_notifier(engine.stop_notifier());
+    let _server = ipc::start(engine.paths(), tx)?;
+    // Native notifications are the fast path; periodic reconciliation keeps
+    // startup/recovery working if registration is temporarily unavailable.
+    let _monitor = match platform::monitor(engine.network_notifier()) {
+        Ok(monitor) => Some(monitor),
+        Err(e) => {
+            crate::diagnostics::record(
+                engine.paths(),
+                &format!("network notifications unavailable; using reconciliation: {e}"),
+            );
+            None
+        }
+    };
     #[cfg(windows)]
     platform::register_power_notifier(engine.power_notifier());
     crate::diagnostics::record(engine.paths(), "service starting");

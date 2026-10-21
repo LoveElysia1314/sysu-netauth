@@ -47,7 +47,7 @@ fn wait_state(rx: &mpsc::Receiver<Option<Snapshot>>, state: State) -> Snapshot {
 }
 fn recv_start(rx: &mpsc::Receiver<Event>, client: [u8; 6]) {
     let expected = protocol::control(client, 1);
-    let end = Instant::now() + Duration::from_secs(5);
+    let end = Instant::now() + Duration::from_secs(10);
     loop {
         if let Event::Packet(_, bytes) = rx
             .recv_timeout(end.saturating_duration_since(Instant::now()))
@@ -164,10 +164,14 @@ fn isolated_resume_reauthenticates_without_gui_or_link_change() {
     assert!(reply_rx.recv_timeout(Duration::from_secs(5)).unwrap().ok);
     let mut challenge = vec![16];
     challenge.extend(0..16);
-    // Initial authentication, then a normal sleep/wake, then a wake whose
-    // suspend event was missed. No GUI or Authenticate IPC command is used.
-    for round in 0..3 {
-        if round > 0 {
+    // Initial authentication, two sleep/wake variants, then link down/up with
+    // neither native notifications nor a GUI Authenticate command.
+    for round in 0..4 {
+        if round == 3 {
+            ip(&["link", "set", "nactest0", "down"]);
+            assert!(!wait_state(&updates_rx, State::Idle).internet);
+            ip(&["link", "set", "nactest0", "up"]);
+        } else if round > 0 {
             // Remove old control traffic before checking for a fresh Start.
             while capture_rx.try_recv().is_ok() {}
             if round == 1 {
@@ -213,6 +217,29 @@ fn isolated_resume_reauthenticates_without_gui_or_link_change() {
             .send(&success(server.mac, client.mac, 8))
             .unwrap();
         assert!(wait_state(&updates_rx, State::Authenticated).internet);
+    }
+    // External config changes are reconciled without asking the GUI to reload.
+    let mut changed: Config = config::read(&dir.join("config.json")).unwrap();
+    changed.desktop_notify = false;
+    config::save(
+        &Paths {
+            config: dir.join("config.json"),
+            state: dir.clone(),
+            endpoint: dir.join("control.sock"),
+        },
+        &changed,
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if engine_request(&tx, Action::GetConfig).data["desktop_notify"] == false {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "service did not reload external settings"
+        );
+        std::thread::sleep(Duration::from_millis(50));
     }
     // A deliberate logoff must survive the artificial down/up edge caused by
     // powering an adapter back on. Observe down before sleep, then up on wake.
@@ -418,10 +445,73 @@ fn isolated_service_authentication_and_renewal() {
             .send(&request(server.mac, client.mac, id, 4, &challenge))
             .unwrap();
         recv(&rx, 2, Some(4));
-        session
-            .capture
-            .send(&success(server.mac, client.mac, id))
-            .unwrap();
+        if id != 13 {
+            session
+                .capture
+                .send(&success(server.mac, client.mac, id))
+                .unwrap();
+        }
+    }
+    // Online MD5 probes may omit a terminal Success. Stay online beyond the
+    // former ten-second timeout and keep using the same capture session.
+    std::thread::sleep(Duration::from_secs(11));
+    assert_eq!(
+        ipc::request(&paths, Action::Status).unwrap().data["state"],
+        "authenticated"
+    );
+    // A switch may use another source MAC for online reauthentication. Answer
+    // that valid Request without replacing the established capture session.
+    let alternate = [0x02, 0, 0, 0, 0, 0x42];
+    session
+        .capture
+        .send(&request(alternate, client.mac, 14, 1, &[]))
+        .unwrap();
+    let response = recv(&rx, 2, Some(1));
+    let response = protocol::parse(&response).unwrap();
+    assert_eq!(response.destination, protocol::PAE);
+    assert_eq!(response.data, b"test-user");
+    assert_eq!(
+        ipc::request(&paths, Action::Status).unwrap().data["state"],
+        "authenticated"
+    );
+    // Return to the original authenticator before testing its explicit Failure.
+    session
+        .capture
+        .send(&request(server.mac, client.mac, 14, 1, &[]))
+        .unwrap();
+    recv(&rx, 2, Some(1));
+    // A genuine rejection, unlike an absent Success, must reconnect without
+    // an Authenticate request from the GUI or a physical link change.
+    while rx.try_recv().is_ok() {}
+    let mut failure = success(server.mac, client.mac, 14);
+    failure[18] = 4;
+    session.capture.send(&failure).unwrap();
+    recv_start(&rx, client.mac);
+    session
+        .capture
+        .send(&request(server.mac, client.mac, 15, 1, &[]))
+        .unwrap();
+    recv(&rx, 2, Some(1));
+    session
+        .capture
+        .send(&request(server.mac, client.mac, 16, 4, &challenge))
+        .unwrap();
+    recv(&rx, 2, Some(4));
+    session
+        .capture
+        .send(&success(server.mac, client.mac, 16))
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = ipc::request(&paths, Action::Status).unwrap();
+        if status.data["state"] == "authenticated" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "service did not recover without GUI: {status:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
     }
     let response = ipc::request(&paths, Action::Status).unwrap();
     assert_eq!(response.data["state"], "authenticated");

@@ -63,7 +63,7 @@ Name: "{autodesktop}\SYSU NetAuth"; Filename: "{app}\sysu_netauth_gui.exe"
 
 [Run]
 Filename: "{app}\sysu_netauth_gui.exe"; Description: "启动 SYSU NetAuth"; Flags: nowait postinstall skipifsilent runascurrentuser
-Filename: "{#NpcapUrl}"; Description: "打开 Npcap 官网下载页（网络认证需要安装驱动）"; Flags: shellexec postinstall skipifsilent runasoriginaluser unchecked; Check: NpcapRequired
+Filename: "{#NpcapUrl}"; Description: "打开 Npcap 官网下载页（网络认证需要安装驱动）"; Flags: shellexec nowait postinstall skipifsilent runasoriginaluser unchecked; Check: NpcapRequired
 
 [Code]
 const
@@ -71,6 +71,7 @@ const
   UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#MyAppGuid}_is1';
 
 #include "npcap.iss"
+#include "process.iss"
 
 var
   ExistingInstallDir: String;
@@ -125,16 +126,16 @@ end;
 procedure StopProcesses;
 var Code, Remaining: Integer;
 begin
-  Exec('sc.exe', 'stop SYSUNetAuth', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  RunSetupCommand(ExpandConstant('{sys}\sc.exe'), 'stop SYSUNetAuth', 15, Code);
   Remaining := 10;
   while Remaining > 0 do begin
-    if not Exec('cmd.exe', '/c tasklist /fi "imagename eq sysu_netauth_service.exe" /nh | findstr /i sysu_netauth_service.exe', '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then Break;
+    if not RunSetupCommand(ExpandConstant('{sys}\cmd.exe'), '/d /c tasklist /fi "imagename eq sysu_netauth_service.exe" /nh | findstr /i sysu_netauth_service.exe', 5, Code) or (Code <> 0) then Break;
     Sleep(1000);
     Dec(Remaining);
   end;
-  Exec('taskkill.exe', '/f /im sysu_netauth_service.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
-  Exec('taskkill.exe', '/f /im sysu_netauth_gui.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
-  Exec('taskkill.exe', '/f /im sysu_netauth.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  RunSetupCommand(ExpandConstant('{sys}\taskkill.exe'), '/f /im sysu_netauth_service.exe', 5, Code);
+  RunSetupCommand(ExpandConstant('{sys}\taskkill.exe'), '/f /im sysu_netauth_gui.exe', 5, Code);
+  RunSetupCommand(ExpandConstant('{sys}\taskkill.exe'), '/f /im sysu_netauth.exe', 5, Code);
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -159,22 +160,33 @@ begin
   RegWriteExpandStringValue(HKLM, EnvironmentKey, 'Path', Value);
 end;
 
+procedure SetupStage(Message: String);
+begin
+  Log(Message);
+  WizardForm.StatusLabel.Caption := Message;
+end;
+
 procedure CurStepChanged(Step: TSetupStep);
 var Code: Integer;
 begin
   if Step = ssPostInstall then begin
     // Retire Python/Qt bundles while retaining ProgramData settings for migration.
+    SetupStage('正在清理旧版程序文件…');
     DelTree(ExpandConstant('{app}\_internal'), True, True, True);
-    Exec('schtasks.exe', '/Change /TN "SYSUNetAuth GUI" /TR "\"' + ExpandConstant('{app}\sysu_netauth_gui.exe') + '\" --startup"', '', SW_HIDE, ewWaitUntilTerminated, Code);
+    SetupStage('正在更新登录启动设置…');
+    RunSetupCommand(ExpandConstant('{sys}\schtasks.exe'), '/Change /TN "SYSUNetAuth GUI" /TR "\"' + ExpandConstant('{app}\sysu_netauth_gui.exe') + '\" --startup"', 15, Code);
     RegDeleteValue(HKLM, 'SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers', ExpandConstant('{app}\sysu_netauth.exe'));
     RemoveLegacyStartup;
-    Exec('icacls.exe', '"' + ExpandConstant('{commonappdata}\SYSUNetAuth') + '" /inheritance:r /remove:g *S-1-5-32-545 /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F /T', '', SW_HIDE, ewWaitUntilTerminated, Code);
+    SetupStage('正在设置配置目录权限…');
+    RunSetupCommand(ExpandConstant('{sys}\icacls.exe'), '"' + ExpandConstant('{commonappdata}\SYSUNetAuth') + '" /inheritance:r /remove:g *S-1-5-32-545 /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F /T', 30, Code);
     ClearPendingCommands;
-    if not Exec(ExpandConstant('{app}\sysu_netauth_service.exe'), '--install', '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then
-      RaiseException('Windows 服务注册失败。');
-    Exec('sc.exe', 'failure SYSUNetAuth reset= 86400 actions= restart/60000', '', SW_HIDE, ewWaitUntilTerminated, Code);
+    SetupStage('正在注册后台认证服务…');
+    if not RunSetupCommand(ExpandConstant('{app}\sysu_netauth_service.exe'), '--install', 30, Code) or (Code <> 0) then
+      RaiseException('Windows 服务注册失败或超时，请查看安装日志。错误码：' + IntToStr(Code));
+    RunSetupCommand(ExpandConstant('{sys}\sc.exe'), 'failure SYSUNetAuth reset= 86400 actions= restart/60000', 15, Code);
     // The service must start without Npcap so configuration and setup remain available.
-    if Exec('sc.exe', 'start SYSUNetAuth', '', SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0) then
+    SetupStage('正在启动后台认证服务…');
+    if RunSetupCommand(ExpandConstant('{sys}\sc.exe'), 'start SYSUNetAuth', 30, Code) and (Code = 0) then
       Log('Windows 服务已启动。')
     else
       Log('Windows 服务启动失败或已在运行，代码：' + IntToStr(Code));
@@ -194,8 +206,8 @@ var Code: Integer; SharedData, UserData, LegacyData: String;
 begin
   if Step = usUninstall then begin
     StopProcesses;
-    Exec('sc.exe', 'delete SYSUNetAuth', '', SW_HIDE, ewWaitUntilTerminated, Code);
-    Exec('schtasks.exe', '/Delete /TN "SYSUNetAuth GUI" /F', '', SW_HIDE, ewWaitUntilTerminated, Code);
+    RunSetupCommand(ExpandConstant('{sys}\sc.exe'), 'delete SYSUNetAuth', 15, Code);
+    RunSetupCommand(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "SYSUNetAuth GUI" /F', 15, Code);
     RemoveLegacyStartup;
     ClearPendingCommands;
     SetPath(False);
