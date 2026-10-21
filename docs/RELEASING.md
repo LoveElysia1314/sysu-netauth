@@ -11,7 +11,7 @@ Versions come from Git tags. Rust uses `git-version`; Python uses `setuptools-sc
 | `v0.7.0-beta.2` | `0.7.0-beta.2` | `0.7.0b2` |
 | `v0.7.0-rc.1` | `0.7.0-rc.1` | `0.7.0rc1` |
 
-Use a lowercase `v` prefix. Pushing a release tag runs **Release packages** and creates a draft GitHub release. Publishing a release also builds and attaches its packages. Prerelease tags produce prereleases. Review installation, upgrade and service operation before publishing the draft.
+Commit the release changes, create a tag in one of these formats, and push it. **Release packages** builds both applications and creates a draft GitHub release. Prerelease tags produce prereleases. Review installation, upgrade and service operation before publishing the draft.
 
 The workflow can also run manually on a release tag. Existing releases receive the installers without changes to their notes or publication status. Reruns replace assets with matching filenames.
 
