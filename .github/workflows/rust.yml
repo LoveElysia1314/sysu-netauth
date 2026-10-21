@@ -10,6 +10,8 @@ on:
         default: ''
 permissions:
   contents: read
+env:
+  PIP_CACHE_DIR: ${{ github.workspace }}/.cache/pip-build
 jobs:
   test:
     strategy:
@@ -26,6 +28,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements-build.txt
       - if: inputs.release_tag != ''
         run: python -m pip install -r requirements-build.txt
       - if: inputs.release_tag != ''
@@ -35,6 +39,10 @@ jobs:
           components: rustfmt, clippy
       - if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: host-${{ matrix.os }}
+          cache-bin: false
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
@@ -69,6 +77,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements-build.txt
       - if: inputs.release_tag != ''
         run: python -m pip install -r requirements-build.txt
       - if: inputs.release_tag != ''
@@ -77,7 +87,13 @@ jobs:
         with:
           targets: x86_64-pc-windows-gnu
           components: clippy
-      - run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 zip
+      - uses: ./.github/actions/cache-apt
+        with:
+          packages: gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 zip
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-windows-gnu
+          cache-bin: false
       - run: cargo clippy --locked --target x86_64-pc-windows-gnu --all-targets -- -D warnings
       - run: sh apps/rust/scripts/build-windows-gnu.sh
       - if: inputs.release_tag != ''
@@ -91,7 +107,9 @@ jobs:
   windows-cross:
     runs-on: ubuntu-latest
     env:
-      XWIN_CACHE_DIR: ${{ github.workspace }}/target/xwin
+      # Keep the SDK outside target/, which rust-cache prunes before saving.
+      XWIN_CACHE_DIR: ${{ github.workspace }}/.cache/xwin
+      CARGO_XWIN_VERSION: '0.23.1'
       NETAUTH_RELEASE_TAG: ${{ inputs.release_tag }}
     steps:
       - uses: actions/checkout@v4
@@ -101,6 +119,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements-build.txt
       - if: inputs.release_tag != ''
         run: python -m pip install -r requirements-build.txt
       - if: inputs.release_tag != ''
@@ -108,12 +128,31 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
-      - run: sudo apt-get update && sudo apt-get install -y clang llvm lld zip
-      - uses: actions/cache@v4
+      - id: cross-tools
+        uses: ./.github/actions/cache-apt
         with:
-          path: target/xwin
-          key: xwin-linux-x64-0.23.1
-      - run: cargo install --locked cargo-xwin --version 0.23.1
+          packages: clang llvm lld zip
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-windows-msvc
+          cache-bin: false
+          env-vars: CARGO CC CFLAGS CXX CMAKE RUST XWIN NETAUTH_RC
+      - name: Cache cargo-xwin executable
+        id: cargo-xwin
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-xwin
+          key: cargo-xwin-v1-${{ steps.cross-tools.outputs.platform }}-${{ env.CARGO_XWIN_VERSION }}
+      - name: Install cargo-xwin on cache miss
+        if: steps.cargo-xwin.outputs.cache-hit != 'true'
+        run: cargo install --locked cargo-xwin --version "=$CARGO_XWIN_VERSION"
+      - name: Verify cached cargo-xwin version
+        run: test "$(cargo-xwin --version)" = "cargo-xwin $CARGO_XWIN_VERSION"
+      - name: Cache Windows SDK and CRT
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.XWIN_CACHE_DIR }}
+          key: xwin-v2-${{ runner.os }}-${{ runner.arch }}-x86_64-${{ env.CARGO_XWIN_VERSION }}-${{ hashFiles('apps/rust/scripts/build-windows.sh') }}
       - run: sh apps/rust/scripts/build-windows.sh
       - uses: actions/upload-artifact@v4
         with:

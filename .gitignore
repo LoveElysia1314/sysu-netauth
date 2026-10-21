@@ -19,6 +19,7 @@ config.json
 private/
 
 # Build artifacts
+/.cache/
 target/
 build/
 dist/
