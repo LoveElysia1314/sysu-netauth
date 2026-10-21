@@ -20,7 +20,6 @@ use windows_sys::Win32::{
         Threading::*,
     },
     UI::{
-        Accessibility::*,
         Controls::*,
         HiDpi::*,
         Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled},
@@ -28,6 +27,8 @@ use windows_sys::Win32::{
         WindowsAndMessaging::*,
     },
 };
+mod theme;
+use theme::Theme;
 
 const APP_EVENT: u32 = WM_APP + 1;
 const TRAY: u32 = WM_APP + 2;
@@ -95,6 +96,7 @@ struct Window {
     dpi: u32,
     font: HFONT,
     heading_font: HFONT,
+    theme: Theme,
     status_brush: HBRUSH,
     status_color: COLORREF,
     status_background: COLORREF,
@@ -197,6 +199,7 @@ impl Window {
         unsafe {
             SendMessageW(handle, WM_SETFONT, self.font as usize, 1);
         }
+        self.theme.install(handle, class);
         self.controls.push(Control {
             hwnd: handle,
             bounds: [x, y, w, h],
@@ -250,6 +253,18 @@ impl Window {
                     DeleteObject(font);
                 }
             }
+            SendMessageW(
+                self.iface,
+                CB_SETITEMHEIGHT,
+                usize::MAX,
+                scaled(20, self.dpi) as isize,
+            );
+            SendMessageW(
+                self.iface,
+                CB_SETITEMHEIGHT,
+                0,
+                scaled(22, self.dpi) as isize,
+            );
             let mut rect = RECT {
                 left: 0,
                 top: 0,
@@ -302,25 +317,8 @@ impl Window {
         }
     }
     fn status_style(&mut self, state: &State, title: &str) {
-        let (mut foreground, mut background) = match state {
-            State::Authenticated => (rgb(22, 101, 52), rgb(240, 253, 244)),
-            State::Authenticating => (rgb(146, 64, 14), rgb(255, 251, 235)),
-            State::Failed => (rgb(185, 28, 28), rgb(254, 242, 242)),
-            State::Stopped | State::Idle => (rgb(71, 85, 105), rgb(241, 245, 249)),
-        };
-        let mut contrast: HIGHCONTRASTW = unsafe { mem::zeroed() };
-        contrast.cbSize = mem::size_of::<HIGHCONTRASTW>() as u32;
+        let (foreground, background) = self.theme.status(state);
         unsafe {
-            SystemParametersInfoW(
-                SPI_GETHIGHCONTRAST,
-                contrast.cbSize,
-                (&mut contrast as *mut HIGHCONTRASTW).cast(),
-                0,
-            );
-            if contrast.dwFlags & HCF_HIGHCONTRASTON != 0 {
-                foreground = GetSysColor(COLOR_WINDOWTEXT);
-                background = GetSysColor(COLOR_WINDOW);
-            }
             if background != self.status_background || self.status_brush.is_null() {
                 if !self.status_brush.is_null() {
                     DeleteObject(self.status_brush);
@@ -337,7 +335,7 @@ impl Window {
         unsafe {
             let mut paint: PAINTSTRUCT = mem::zeroed();
             let dc = BeginPaint(self.hwnd, &mut paint);
-            FillRect(dc, &paint.rcPaint, GetSysColorBrush(COLOR_WINDOW));
+            FillRect(dc, &paint.rcPaint, self.theme.background_brush);
             let brush = SelectObject(dc, GetStockObject(DC_BRUSH));
             let pen = SelectObject(dc, GetStockObject(DC_PEN));
             SetDCBrushColor(dc, self.status_background);
@@ -413,7 +411,11 @@ impl Window {
         self.iface = self.control(
             "COMBOBOX",
             "",
-            WS_TABSTOP | CBS_DROPDOWNLIST as u32 | WS_VSCROLL,
+            WS_TABSTOP
+                | CBS_DROPDOWNLIST as u32
+                | CBS_OWNERDRAWFIXED as u32
+                | CBS_HASSTRINGS as u32
+                | WS_VSCROLL,
             78,
             106,
             270,
@@ -577,6 +579,7 @@ impl Window {
         self.update_options();
         self.update_actions(false, false);
         self.layout(self.dpi);
+        self.theme.title_bar(self.hwnd);
         self.status_style(&State::Idle, "正在连接");
         self.tray.cbSize = mem::size_of::<NOTIFYICONDATAW>() as u32;
         self.tray.hWnd = self.hwnd;
@@ -964,38 +967,69 @@ unsafe extern "system" fn wndproc(hwnd: HWND, message: u32, wparam: usize, lpara
             return 0;
         }
         match message {
+            WM_MEASUREITEM => {
+                let item = unsafe { &mut *(lparam as *mut MEASUREITEMSTRUCT) };
+                if item.CtlType == ODT_COMBOBOX {
+                    item.itemHeight = scaled(22, window.dpi) as u32;
+                    return 1;
+                }
+            }
+            WM_DRAWITEM => {
+                let item = unsafe { &*(lparam as *const DRAWITEMSTRUCT) };
+                if item.CtlType == ODT_COMBOBOX {
+                    window.theme.combo_item(item, window.dpi);
+                    return 1;
+                }
+            }
             WM_PAINT => {
                 window.paint();
                 return 0;
             }
-            WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
+            WM_ERASEBKGND => {
+                unsafe {
+                    let mut rect: RECT = mem::zeroed();
+                    GetClientRect(hwnd, &mut rect);
+                    FillRect(wparam as HDC, &rect, window.theme.background_brush);
+                }
+                return 1;
+            }
+            WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
                 let dc = wparam as HDC;
                 let control = lparam as HWND;
                 let is_status = control == window.state || control == window.status;
+                let is_field = message == WM_CTLCOLORLISTBOX
+                    || control == window.username
+                    || control == window.password
+                    || control == window.retry
+                    || control == window.iface;
                 unsafe {
                     SetTextColor(
                         dc,
                         if is_status {
                             window.status_color
                         } else if IsWindowEnabled(control) == 0 {
-                            GetSysColor(COLOR_GRAYTEXT)
+                            window.theme.muted
                         } else {
-                            GetSysColor(COLOR_WINDOWTEXT)
+                            window.theme.text
                         },
                     );
                     SetBkColor(
                         dc,
                         if is_status {
                             window.status_background
+                        } else if is_field {
+                            window.theme.field
                         } else {
-                            GetSysColor(COLOR_WINDOW)
+                            window.theme.background
                         },
                     );
                 }
                 return if is_status {
                     window.status_brush
+                } else if is_field {
+                    window.theme.field_brush
                 } else {
-                    unsafe { GetSysColorBrush(COLOR_WINDOW) }
+                    window.theme.background_brush
                 } as isize;
             }
             WM_DPICHANGED => {
@@ -1014,7 +1048,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, message: u32, wparam: usize, lpara
                 window.layout((wparam & 0xffff) as u32);
                 return 0;
             }
-            WM_SETTINGCHANGE => {
+            WM_SETTINGCHANGE | WM_THEMECHANGED | WM_SYSCOLORCHANGE => {
+                window.theme = Theme::system();
+                window.theme.title_bar(hwnd);
                 window.layout(window.dpi);
                 let state = window
                     .snapshot
@@ -1022,6 +1058,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, message: u32, wparam: usize, lpara
                     .map(|s| s.state.clone())
                     .unwrap_or(State::Idle);
                 window.status_style(&state, &text(window.state));
+                unsafe {
+                    RedrawWindow(
+                        hwnd,
+                        ptr::null(),
+                        ptr::null_mut(),
+                        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
+                    );
+                }
                 return 0;
             }
             DM_GETDEFID => return ((DC_HASDEFID as usize) << 16 | CONNECT as usize) as isize,
@@ -1151,6 +1195,7 @@ pub fn run() -> Result<()> {
         dpi: unsafe { GetDpiForWindow(hwnd) }.max(96),
         font: ptr::null_mut(),
         heading_font: ptr::null_mut(),
+        theme: Theme::system(),
         status_brush: ptr::null_mut(),
         status_color: 0,
         status_background: 0,

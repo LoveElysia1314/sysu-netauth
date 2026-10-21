@@ -10,6 +10,12 @@
 
 配置与日志：`%ProgramData%\SYSUNetAuth\`。从 Python 版切换前请阅读 [版本切换说明](../../docs/ARCHITECTURE.md)。
 
+窗口跟随 Windows 的应用浅色/深色设置，无需重启。以下为 Wine 下运行的 Rust GUI，使用示例数据。
+
+![浅色界面](docs/gui-main-window.png)
+
+![深色界面](docs/gui-main-window-dark.png)
+
 ## 构建
 
 以下命令从仓库根目录执行，需要 Rust 工具链。
