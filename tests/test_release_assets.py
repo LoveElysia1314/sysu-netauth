@@ -26,7 +26,7 @@ class ReleaseAssetsTests(unittest.TestCase):
         self.output = self.root / "output"
         self.output.mkdir()
         for label, version in (("Rust_msvc_x64", "0.7.0-alpha.0"), ("Rust_gnu_x64", "0.7.0-alpha.0"), ("Python_x64", "0.7.0a0")):
-            names = [f"SYSUNetAuth_{label}_Setup_v{version}.exe", f"SYSUNetAuth_{label}_Setup_v{version}.zip", f"SYSUNetAuth_{label}_Portable_v{version}.zip"]
+            names = [f"SYSUNetAuth_{label}_Setup_v{version}.exe", f"SYSUNetAuth_{label}_Portable_v{version}.zip"]
             checksums = []
             for name in names:
                 payload = name.encode()
@@ -49,9 +49,10 @@ class ReleaseAssetsTests(unittest.TestCase):
 
     def test_collects_all_four_variants_and_checksums(self):
         result = assets.prepare(self.metadata, self.linux, self.output)
-        self.assertEqual(len(result), 14)
+        self.assertEqual(len(result), 11)
         self.assertEqual(sum(path.name.endswith(".exe") for path in result), 3)
         self.assertEqual(sum("_Portable_" in path.name for path in result), 3)
+        self.assertEqual(sum(path.suffix == ".zip" for path in result), 3)
         linux = self.output / "SYSUNetAuth_Rust_linux_x64_v0.7.0-alpha.0.tar.gz"
         self.assertEqual(linux.read_bytes(), self.linux.read_bytes())
         self.assertEqual((self.output / "SHA256SUMS-rust-linux-x64.txt").read_text(), f"{hashlib.sha256(linux.read_bytes()).hexdigest()}  {linux.name}\n")
@@ -60,6 +61,12 @@ class ReleaseAssetsTests(unittest.TestCase):
         for path in self.output.glob("*gnu*"):
             path.unlink()
         with self.assertRaisesRegex(ValueError, "missing=.*gnu"):
+            assets.prepare(self.metadata, self.linux, self.output)
+
+    def test_obsolete_installer_zip_blocks_release(self):
+        obsolete = self.output / "SYSUNetAuth_Rust_msvc_x64_Setup_v0.7.0-alpha.0.zip"
+        obsolete.write_bytes(b"obsolete installer ZIP")
+        with self.assertRaisesRegex(ValueError, "unexpected=.*_Setup_.*zip"):
             assets.prepare(self.metadata, self.linux, self.output)
 
     def test_corrupt_windows_package_blocks_release(self):

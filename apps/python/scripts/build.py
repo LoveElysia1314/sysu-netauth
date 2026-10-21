@@ -13,7 +13,6 @@ SYSU NetAuth — PyInstaller 打包 & Inno Setup 安装程序制作脚本
 输出:
     dist/sysu_netauth/                           PyInstaller 输出（单文件夹）
     SYSUNetAuth_Setup_v{VERSION}.exe                Inno Setup 安装包
-    SYSUNetAuth_Setup_v{VERSION}.zip                安装包 ZIP（浏览器下载友好）
 
 依赖:
     - Python ≥ 3.10
@@ -32,7 +31,6 @@ import site
 import subprocess
 import sys
 import time
-import zipfile
 from pathlib import Path
 
 site.ENABLE_USER_SITE = False  # noqa
@@ -319,7 +317,6 @@ def build_installer(config: BuildConfig):
             print(f"[4/4] 安装包已生成: {setup_dst}")
 
             shutil.rmtree(output_dir, ignore_errors=True)
-            create_setup_zip(config)
             return True
         else:
             print(f"[4/4] 警告：未找到生成的安装包 {setup_name}")
@@ -332,28 +329,6 @@ def build_installer(config: BuildConfig):
         if e.stderr:
             print(e.stderr[-2000:])
         return False
-
-
-# ═══════════════════════════════════════════════════════════════
-# 便携版 ZIP
-# ═══════════════════════════════════════════════════════════════
-
-
-def create_setup_zip(config: BuildConfig):
-    """将安装包 .exe 打包为 .zip（规避浏览器对 .exe 下载的安全拦截）。"""
-    setup_name = f"{APP_ID}_Setup_v{VERSION}.exe"
-    setup_path = config.project_root / setup_name
-    if not setup_path.is_file():
-        return
-    zip_name = f"{APP_ID}_Setup_v{VERSION}.zip"
-    zip_path = config.project_root / zip_name
-    temp_zip = zip_path.with_suffix(".zip.tmp")
-    temp_zip.unlink(missing_ok=True)
-    with zipfile.ZipFile(temp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.write(setup_path, setup_name)
-    _replace_artifact(temp_zip, zip_path)
-    size_mb = zip_path.stat().st_size / (1024 * 1024)
-    print(f"   [+] 安装包 ZIP: {zip_name} ({size_mb:.1f} MB)")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -449,15 +424,9 @@ def main():
             size_mb = setup_path.stat().st_size / (1024 * 1024)
             print(f"  安装包:     {setup_path} ({size_mb:.1f} MB)")
 
-        setup_zip = config.project_root / f"{APP_ID}_Setup_v{VERSION}.zip"
-        if setup_zip.exists():
-            size_mb = setup_zip.stat().st_size / (1024 * 1024)
-            print(f"  安装包 ZIP: {setup_zip} ({size_mb:.1f} MB)")
-
         print()
         print("  [*] 使用说明:")
         print(f"     安装包: 双击 {APP_ID}_Setup_v{VERSION}.exe")
-        print(f"     安装包 ZIP: 解压后双击 {APP_ID}_Setup_v{VERSION}.exe")
         print("     CLI:    sysu_netauth -i '以太网 4' -u 'NetID' -p 'your_password'")
         print()
 

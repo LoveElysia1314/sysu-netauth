@@ -20,10 +20,8 @@ if (-not $SkipInstaller) {
     $version = ($versionLine -split '\s+')[-1]
     $fileVersion = [regex]::Match($version, '^[0-9]+\.[0-9]+\.[0-9]+').Value
     if (-not $fileVersion) { throw 'Cannot read installer version from the built CLI' }
-    $setupBase = "SYSUNetAuth_Rust_msvc_x64_Setup_v$version"
     $compiler = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
     if (-not $compiler) { $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
     & $compiler "/DMyAppVersion=$version" "/DMyAppFileVersion=$fileVersion" (Join-Path $PSScriptRoot 'setup.template.iss')
     if ($LASTEXITCODE -ne 0) { throw 'Inno Setup build failed' }
-    Compress-Archive -Force -Path (Join-Path $rustRoot "dist/$setupBase.exe") -DestinationPath (Join-Path $rustRoot "dist/$setupBase.zip")
 }
