@@ -82,6 +82,9 @@ class WindowsPackagingTests(unittest.TestCase):
 
     def test_all_windows_variants_have_installers_portable_binaries_and_checksums(self):
         self.python_version = PYTHON_VERSION
+        self.output.mkdir()
+        for label in ("Rust_msvc_x64", "Rust_gnu_x64", "Python_x64"):
+            (self.output / f"SYSUNetAuth_{label}_Setup_v1.2.3.zip").write_bytes(b"obsolete installer ZIP")
         with patch.object(packaging.subprocess, "run", side_effect=self.compile) as compile_setup:
             rust = packaging.package("rust", self.source, self.output, Path("ISCC.exe"))
             gnu = packaging.package("rust", self.source, self.output, Path("ISCC.exe"), abi="gnu")
@@ -91,10 +94,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertEqual(python[0].name, f"SYSUNetAuth_Python_x64_Setup_v{PYTHON_VERSION}.exe")
         self.assertEqual(gnu[0].name, f"SYSUNetAuth_Rust_gnu_x64_Setup_v{RUST_VERSION}.exe")
         self.assertTrue(any("/DMyAppAbi=gnu" in call.args[0] for call in compile_setup.call_args_list))
-        for setup, archive, portable, checksums in (rust, gnu, python):
-            with zipfile.ZipFile(archive) as bundle:
-                self.assertEqual(bundle.namelist(), [setup.name])
-                self.assertEqual(bundle.read(setup.name), setup.read_bytes())
+        for setup, portable, checksums in (rust, gnu, python):
             with zipfile.ZipFile(portable) as bundle:
                 self.assertEqual(bundle.read("sysu_netauth/sysu_netauth.exe"), (self.source / "sysu_netauth.exe").read_bytes())
                 self.assertIn("sysu_netauth/sysu_netauth_service.exe", bundle.namelist())
@@ -103,10 +103,12 @@ class WindowsPackagingTests(unittest.TestCase):
                 else:
                     self.assertEqual(len(bundle.namelist()), 3)
                     self.assertIn("sysu_netauth/sysu_netauth_gui.exe", bundle.namelist())
-            self.assertEqual(len(checksums.read_text().splitlines()), 3)
+            self.assertEqual(len(checksums.read_text().splitlines()), 2)
+            self.assertEqual({line.split("  ")[1] for line in checksums.read_text().splitlines()}, {setup.name, portable.name})
             for line in checksums.read_text(encoding="utf-8").splitlines():
                 digest, name = line.split("  ")
                 self.assertEqual(digest, hashlib.sha256((self.output / name).read_bytes()).hexdigest())
+        self.assertFalse(list(self.output.glob("*_Setup_*.zip")))
         self.assertFalse((self.root / "apps/python/scripts/setup.iss").exists())
 
     def test_one_prerelease_tag_drives_both_installers_and_checks_artifact_identity(self):

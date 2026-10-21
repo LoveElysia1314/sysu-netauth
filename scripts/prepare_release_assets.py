@@ -25,7 +25,6 @@ def expected_assets(info: dict) -> dict[str, list[str]]:
         identifier = label.lower().replace("_", "-")
         groups[f"SHA256SUMS-{identifier}.txt"] = [
             f"{stem}_Setup_v{version}.exe",
-            f"{stem}_Setup_v{version}.zip",
             f"{stem}_Portable_v{version}.zip",
         ]
     groups["SHA256SUMS-rust-linux-x64.txt"] = [

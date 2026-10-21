@@ -21,7 +21,7 @@ The workflow can also run manually on a release tag. Existing releases receive t
 | Rust, GNU x64 | `SYSUNetAuth_Rust_gnu_x64_Setup_v<version>.exe` | `SHA256SUMS-rust-gnu-x64.txt` |
 | Python, x64 | `SYSUNetAuth_Python_x64_Setup_v<version>.exe` | `SHA256SUMS-python-x64.txt` |
 
-Each Windows variant also provides a ZIP containing the installer and a separate `SYSUNetAuth_<variant>_Portable_v<version>.zip` containing the application binaries. Python's portable archive includes its runtime dependencies.
+Each Windows variant also provides a `SYSUNetAuth_<variant>_Portable_v<version>.zip` containing the application binaries. Python's portable archive includes its runtime dependencies.
 
 Linux x64: `SYSUNetAuth_Rust_linux_x64_v<version>.tar.gz`, with `SHA256SUMS-rust-linux-x64.txt`. The archive includes the CLI, service, systemd unit and installation script.
 
