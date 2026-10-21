@@ -1,0 +1,56 @@
+name: Install cached APT packages
+description: Reuse package downloads while resolving current versions from signed APT indexes.
+inputs:
+  packages:
+    description: Space-separated package names.
+    required: true
+outputs:
+  platform:
+    description: Distribution version and architecture of the runner.
+    value: ${{ steps.resolve.outputs.platform }}
+runs:
+  using: composite
+  steps:
+    - name: Resolve package downloads
+      id: resolve
+      shell: bash
+      env:
+        APT_PACKAGES: ${{ inputs.packages }}
+      run: |
+        . /etc/os-release
+        platform="$ID-$VERSION_ID-$(dpkg --print-architecture)"
+        archives="$RUNNER_TEMP/netauth-apt-archives"
+        mkdir -p "$archives"
+        read -r -a packages <<< "$APT_PACKAGES"
+        sudo apt-get update
+        plan=$(sudo apt-get --yes --download-only --print-uris --no-install-recommends \
+          -o "Dir::Cache::archives=$archives" install "${packages[@]}")
+        # URI lines include package filenames, versions, sizes and checksums.
+        downloads=$(printf '%s\n' "$plan" | sed -n "/^'/p" | LC_ALL=C sort)
+        group=$(printf '%s\n' "${packages[@]}" | LC_ALL=C sort | sha256sum | cut -d ' ' -f 1)
+        digest=$(printf '%s\n' "$downloads" | sha256sum | cut -d ' ' -f 1)
+        printf 'platform=%s\narchives=%s\ngroup=%s\ndigest=%s\n' \
+          "$platform" "$archives" "$group" "$digest" >> "$GITHUB_OUTPUT"
+        if [ -n "$downloads" ]; then
+          echo 'download=true' >> "$GITHUB_OUTPUT"
+        fi
+        printf '%s\n' "$plan"
+    - name: Cache package archives
+      if: steps.resolve.outputs.download == 'true'
+      uses: actions/cache@v4
+      with:
+        # Exclude APT's lock file and restricted partial-download directory.
+        path: ${{ steps.resolve.outputs.archives }}/*.deb
+        key: apt-v1-${{ steps.resolve.outputs.platform }}-${{ steps.resolve.outputs.group }}-${{ steps.resolve.outputs.digest }}
+        restore-keys: apt-v1-${{ steps.resolve.outputs.platform }}-${{ steps.resolve.outputs.group }}-
+    - name: Install packages
+      shell: bash
+      env:
+        APT_PACKAGES: ${{ inputs.packages }}
+        APT_ARCHIVES: ${{ steps.resolve.outputs.archives }}
+      run: |
+        read -r -a packages <<< "$APT_PACKAGES"
+        sudo apt-get --yes --no-install-recommends \
+          -o "Dir::Cache::archives=$APT_ARCHIVES" \
+          -o APT::Keep-Downloaded-Packages=true install "${packages[@]}"
+        sudo apt-get -o "Dir::Cache::archives=$APT_ARCHIVES" autoclean

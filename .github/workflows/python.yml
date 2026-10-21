@@ -18,6 +18,7 @@ jobs:
       # build script and its Python subprocesses on the same UTF-8 encoding.
       PYTHONUTF8: '1'
       PYTHONIOENCODING: utf-8
+      PIP_CACHE_DIR: ${{ github.workspace }}/.cache/pip-app
       NETAUTH_RELEASE_TAG: ${{ inputs.release_tag }}
     defaults:
       run:
@@ -30,7 +31,10 @@ jobs:
         with:
           python-version: '3.13'
           cache: pip
-          cache-dependency-path: apps/python/requirements-dev.lock
+          cache-dependency-path: |
+            requirements-build.txt
+            apps/python/requirements*.lock
+            .github/workflows/python.yml
       - run: python -m pip install -r ../../requirements-build.txt
       - if: inputs.release_tag == ''
         run: python ../../scripts/release_version.py --generate-python

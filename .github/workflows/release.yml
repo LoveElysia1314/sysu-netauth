@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Avoid restoring the much larger Python GUI dependency cache in metadata jobs.
+  PIP_CACHE_DIR: ${{ github.workspace }}/.cache/pip-build
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -26,6 +30,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements-build.txt
       - run: python -m pip install -r requirements-build.txt
       - id: version
         name: Resolve release tag
@@ -49,6 +55,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements-build.txt
       - run: python -m pip install -r requirements-build.txt
       - run: python -m unittest discover -s tests -v
   rust:
@@ -96,6 +104,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements-build.txt
       - run: python -m pip install -r requirements-build.txt
       - uses: actions/download-artifact@v4
         with:
