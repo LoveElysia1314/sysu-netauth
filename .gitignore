@@ -26,7 +26,7 @@ dist/
 SYSUNetAuth_Setup_v*.exe
 SYSUNetAuth_Setup_v*.zip
 
-# Native Windows resources are source files (including packaging/gui.manifest).
+# Rust Windows resources are source files (including packaging/gui.manifest).
 
 # Reverse-engineering generated bulk artifacts
 analysis/
@@ -42,3 +42,4 @@ sysu_netauth.spec
 apps/python/scripts/setup.iss
 apps/python/scripts/Output/
 .pytest_cache/
+apps/python/sysu_netauth/_version.py

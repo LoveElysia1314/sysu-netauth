@@ -34,3 +34,8 @@ ignore_names = [
     # GetAdaptersAddresses 要求调用方设置此字段
     "Length",
 ]
+
+[tool.setuptools_scm]
+root = "../.."
+version_file = "sysu_netauth/_version.py"
+fallback_version = "0.0.0"

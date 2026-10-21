@@ -1,3 +1,3 @@
 @echo off
-call "%~dp0apps\native\start.bat" %*
+call "%~dp0apps\rust\start.bat" %*
 exit /b %errorlevel%

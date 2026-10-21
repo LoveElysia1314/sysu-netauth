@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace as dataclass_replace
 from typing import Callable
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+from packaging.version import InvalidVersion, Version
 
 from sysu_netauth.core.config import APP_VERSION
 
@@ -80,7 +81,10 @@ def parse_version(value: str) -> tuple[int, int, int]:
 
 
 def is_newer_version(candidate: str, current: str = APP_VERSION) -> bool:
-    return parse_version(candidate) > parse_version(current)
+    try:
+        return Version(candidate) > Version(current)
+    except InvalidVersion as exc:
+        raise UpdateManifestError(str(exc)) from exc
 
 
 def is_safe_external_url(url: str, *, allowed_hosts: set[str]) -> bool:

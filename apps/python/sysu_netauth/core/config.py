@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, fields
@@ -12,7 +13,10 @@ from typing import Any
 
 APP_DISPLAY_NAME = "SYSU NetAuth"
 APP_ID = "SYSUNetAuth"
-APP_VERSION = "0.6.3"
+try:
+    from sysu_netauth._version import __version__ as APP_VERSION
+except ImportError:
+    APP_VERSION = "0.0.0"  # Source checkout before build-time version generation.
 
 PROGRAMDATA_ROOT = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
 APP_DIR = PROGRAMDATA_ROOT / APP_ID
@@ -23,6 +27,8 @@ COMMAND_DIR = APP_DIR / "commands"
 SERVICE_CACHE_PATH = APP_DIR / "service_cache.json"
 UPDATE_STATE_PATH = APP_DIR / "update_state.json"
 UI_STATE_PATH = APP_DIR / "ui_state.json"
+
+_REPLACE_LOCK = threading.Lock()
 
 
 @dataclass
@@ -267,16 +273,17 @@ def _atomic_write_json(
             if durable:
                 os.fsync(stream.fileno())
 
-        # Windows 上杀毒软件或另一个进程的短暂文件句柄可能让 replace
-        # 返回 WinError 5。独立临时文件避免写入者互相覆盖，短暂占用则重试。
-        for attempt in range(5):
-            try:
-                os.replace(tmp_path, path)
-                return
-            except PermissionError:
-                if attempt == 4:
-                    raise
-                time.sleep(0.05 * (attempt + 1))
+        # Windows can reject concurrent replacements of the same destination.
+        # Serialize local replacements; retain bounded retries for other processes.
+        with _REPLACE_LOCK:
+            for attempt in range(5):
+                try:
+                    os.replace(tmp_path, path)
+                    return
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
     finally:
         try:
             tmp_path.unlink(missing_ok=True)
