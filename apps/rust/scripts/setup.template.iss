@@ -8,6 +8,9 @@
 #ifndef AppSourceDir
   #define AppSourceDir "..\dist\sysu_netauth"
 #endif
+#ifndef MyAppAbi
+  #define MyAppAbi "msvc"
+#endif
 #define MyAppName "SYSU NetAuth"
 #define MyAppId "SYSUNetAuth"
 
@@ -22,7 +25,7 @@ PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64os
 OutputDir=..\dist
-OutputBaseFilename=SYSUNetAuth_Rust_msvc_x64_Setup_v{#MyAppVersion}
+OutputBaseFilename=SYSUNetAuth_Rust_{#MyAppAbi}_x64_Setup_v{#MyAppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 SetupIconFile=..\assets\icon-ethernet.ico

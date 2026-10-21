@@ -4,7 +4,7 @@
 
 ## Windows 安装
 
-使用 [Releases](https://github.com/LoveElysia1314/sysu-netauth/releases) 中的 `Rust_msvc_x64` Setup 安装程序。需要 [Npcap](https://npcap.com/#download)，程序提供安装引导。
+使用 [Releases](https://github.com/peterrobot/sysu-netauth/releases) 中的 `Rust_msvc_x64` 或 `Rust_gnu_x64` Setup 安装程序。需要 [Npcap](https://npcap.com/#download)，程序提供安装引导。
 
 在设置窗口填写 NetID 和密码，启用自动认证与服务独立运行。退出 GUI 后服务继续认证，并在睡眠、休眠恢复后重新连接。请先退出其他 802.1X 客户端。
 
@@ -45,6 +45,16 @@ sh apps/rust/scripts/build-windows.sh
 sc.exe start SYSUNetAuth
 .\sysu_netauth_gui.exe
 ```
+
+GNU 目标使用 MinGW：
+
+```sh
+sudo apt-get install gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 zip
+rustup target add x86_64-pc-windows-gnu
+sh apps/rust/scripts/build-windows-gnu.sh
+```
+
+GNU 输出：`apps/rust/dist/gnu/sysu_netauth/` 和 `apps/rust/dist/sysu-netauth-windows-gnu-x64.zip`。
 
 ### Linux 安装
 

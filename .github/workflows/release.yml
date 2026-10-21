@@ -1,4 +1,4 @@
-name: Windows release installers
+name: Release packages
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-release-${{ github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -29,7 +29,13 @@ jobs:
       - run: python -m pip install -r requirements-build.txt
       - id: version
         name: Resolve release tag
-        run: python scripts/release_version.py --github-output "$GITHUB_OUTPUT"
+        run: python scripts/release_version.py --write --github-output "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sysu-netauth-release-metadata
+          path: build/release-version.json
+          if-no-files-found: error
+          overwrite: true
   packaging-tests:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -63,11 +69,18 @@ jobs:
       matrix:
         include:
           - variant: rust
+            abi: msvc
             label: rust-msvc-x64
-            artifact: sysu-netauth-Rust-Windows
+            artifact: sysu-netauth-Rust-Windows-msvc
             # Rust CI uploads dist/, including its sysu_netauth subdirectory.
             input: dist/build-input/sysu_netauth
+          - variant: rust
+            abi: gnu
+            label: rust-gnu-x64
+            artifact: sysu-netauth-Rust-Windows-gnu
+            input: dist/build-input/sysu_netauth
           - variant: python
+            abi: ''
             label: python-x64
             artifact: sysu-netauth-Python-Windows
             # Python CI uploads the contents of the PyInstaller directory.
@@ -90,12 +103,26 @@ jobs:
           path: dist/build-input
       - name: Generate matching installer metadata from tag
         run: python scripts/release_version.py --write
+      - name: Verify Rust CLI version on Windows
+        if: matrix.variant == 'rust'
+        env:
+          APP_INPUT: ${{ matrix.input }}
+          EXPECTED_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $actual = & (Join-Path $env:APP_INPUT 'sysu_netauth.exe') --version
+          if ($LASTEXITCODE -ne 0 -or $actual.Trim() -ne "sysu-netauth $env:EXPECTED_VERSION") {
+            throw "Rust executable version mismatch: $actual"
+          }
       - name: Package existing build with Inno Setup
         # Inno Setup 6 is preinstalled on the Windows hosted runner.
         env:
           APP_VARIANT: ${{ matrix.variant }}
+          APP_ABI: ${{ matrix.abi }}
           APP_INPUT: ${{ matrix.input }}
-        run: python scripts/package_windows.py --variant "$env:APP_VARIANT" --input-dir "$env:APP_INPUT"
+        run: |
+          $abiArgs = @()
+          if ($env:APP_ABI) { $abiArgs = @('--abi', $env:APP_ABI) }
+          python scripts/package_windows.py --variant "$env:APP_VARIANT" --input-dir "$env:APP_INPUT" @abiArgs
       - uses: actions/upload-artifact@v4
         with:
           name: sysu-netauth-Windows-installers-${{ matrix.label }}
@@ -113,9 +140,19 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           pattern: sysu-netauth-Windows-installers-*
-          path: dist/windows-installers
+          path: dist/release-assets
           merge-multiple: true
-      - name: Upload installers or create draft release
+      - uses: actions/download-artifact@v4
+        with:
+          name: sysu-netauth-Rust-Linux
+          path: dist/linux-build
+      - uses: actions/download-artifact@v4
+        with:
+          name: sysu-netauth-release-metadata
+          path: build
+      - name: Prepare and verify the complete release set
+        run: python3 scripts/prepare_release_assets.py --metadata build/release-version.json --linux-input dist/linux-build/sysu-netauth-linux-x64.tar.gz --output-dir dist/release-assets
+      - name: Upload packages or create draft release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -123,12 +160,12 @@ jobs:
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
           if gh release view "$RELEASE_TAG" --json isDraft > "$RUNNER_TEMP/release.json"; then
-            gh release upload "$RELEASE_TAG" dist/windows-installers/* --clobber
+            gh release upload "$RELEASE_TAG" dist/release-assets/* --clobber
             if [ "$(jq -r .isDraft "$RUNNER_TEMP/release.json")" = true ]; then
               gh release edit "$RELEASE_TAG" --prerelease="$PRERELEASE"
             fi
           else
-            gh release create "$RELEASE_TAG" dist/windows-installers/* \
+            gh release create "$RELEASE_TAG" dist/release-assets/* \
               --verify-tag --draft --title "SYSU NetAuth $RELEASE_TAG" \
               --prerelease="$PRERELEASE" \
               --notes-file .github/windows-release-notes.md
