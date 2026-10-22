@@ -16,6 +16,7 @@ import re
 import runpy
 import shutil
 import subprocess
+import struct
 import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -38,13 +39,30 @@ def find_compiler() -> Path:
     raise FileNotFoundError("Install Inno Setup 6 or pass --compiler PATH/ISCC.exe")
 
 
-def package(variant: str, input_dir: Path, output_dir: Path, compiler: Path, *, abi: str | None = None) -> list[Path]:
+def verify_pe_architecture(path: Path, arch: str) -> None:
+    """Reject mislabeled or mixed Rust artifacts before invoking the installer compiler."""
+    with path.open("rb") as stream:
+        header = stream.read(64)
+        if len(header) != 64 or header[:2] != b"MZ":
+            raise ValueError(f"Invalid Windows executable: {path}")
+        stream.seek(struct.unpack_from("<I", header, 0x3c)[0])
+        signature = stream.read(6)
+    expected = {"x64": 0x8664, "arm64": 0xaa64}[arch]
+    if len(signature) != 6 or signature[:4] != b"PE\0\0" or struct.unpack_from("<H", signature, 4)[0] != expected:
+        raise ValueError(f"Windows executable does not match {arch}: {path}")
+
+
+def package(variant: str, input_dir: Path, output_dir: Path, compiler: Path, *, abi: str | None = None, arch: str = "x64") -> list[Path]:
+    if arch not in {"x64", "arm64"}:
+        raise ValueError(f"Unsupported Windows architecture: {arch}")
     if variant == "rust":
         abi = abi or "msvc"
         if abi not in {"msvc", "gnu"}:
             raise ValueError(f"Unsupported Rust ABI: {abi}")
     elif abi is not None:
         raise ValueError("--abi applies only to Rust builds")
+    if arch == "arm64" and (variant != "rust" or abi != "msvc"):
+        raise ValueError("Windows ARM64 requires the Rust MSVC build")
     input_dir = input_dir.resolve(strict=True)
     output_dir = output_dir.resolve()
     required = ["sysu_netauth.exe", "sysu_netauth_service.exe"]
@@ -59,6 +77,9 @@ def package(variant: str, input_dir: Path, output_dir: Path, compiler: Path, *, 
         binary = input_dir / name
         if not binary.is_file() or binary.stat().st_size == 0:
             raise FileNotFoundError(f"Missing or empty Windows executable: {binary}")
+    if variant == "rust":
+        for name in required:
+            verify_pe_architecture(input_dir / name, arch)
 
     actual = json.loads((input_dir / "release-version.json").read_text(encoding="utf-8"))
     release_metadata = ROOT / "build/release-version.json"
@@ -73,7 +94,7 @@ def package(variant: str, input_dir: Path, output_dir: Path, compiler: Path, *, 
         version = actual["version"]
         script = app_root / "scripts/setup.template.iss"
         core = re.match(r"\d+\.\d+\.\d+", version)[0]
-        defines = [f"/DMyAppVersion={version}", f"/DMyAppFileVersion={core}", f"/DMyAppAbi={abi}", f"/DAppSourceDir={input_dir}"]
+        defines = [f"/DMyAppVersion={version}", f"/DMyAppFileVersion={core}", f"/DMyAppAbi={abi}", f"/DMyAppArch={arch}", f"/DAppSourceDir={input_dir}"]
     else:
         # Reuse the Python installer generator without running PyInstaller.
         build = runpy.run_path(str(ROOT / "apps/python/scripts/build.py"))
@@ -89,7 +110,7 @@ def package(variant: str, input_dir: Path, output_dir: Path, compiler: Path, *, 
     try:
         if not re.fullmatch(r"\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+|(?:a|b|rc)\d+)?", version):
             raise ValueError(f"Unsupported installer version: {version}")
-        label = f"Rust_{abi}_x64" if variant == "rust" else "Python_x64"
+        label = f"Rust_{abi}_{arch}" if variant == "rust" else "Python_x64"
         identifier = label.lower().replace("_", "-")
         basename = f"SYSUNetAuth_{label}_Setup_v{version}"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -128,12 +149,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--variant", required=True, choices=("rust", "python"))
     parser.add_argument("--abi", choices=("msvc", "gnu"), help="Rust compiler ABI (default: msvc)")
+    parser.add_argument("--arch", choices=("x64", "arm64"), default="x64", help="Windows CPU architecture (default: x64)")
     parser.add_argument("--input-dir", required=True, type=Path, help="Directory containing the built EXEs")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist/windows-installers")
     parser.add_argument("--compiler", type=Path, help="Inno Setup compiler (auto-detected by default)")
     args = parser.parse_args()
     compiler = args.compiler.resolve(strict=True) if args.compiler else find_compiler()
-    for path in package(args.variant, args.input_dir, args.output_dir, compiler, abi=args.abi):
+    for path in package(args.variant, args.input_dir, args.output_dir, compiler, abi=args.abi, arch=args.arch):
         print(path)
 
 

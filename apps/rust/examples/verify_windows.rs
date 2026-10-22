@@ -24,7 +24,7 @@ impl Pe {
                 .try_into()?,
         ))
     }
-    fn open(path: &Path) -> Result<Self> {
+    fn open(path: &Path, machine: u16) -> Result<Self> {
         let bytes = fs::read(path)?;
         ensure!(bytes.starts_with(b"MZ"), "not a Windows executable");
         let coff = Self::u32(&bytes, 0x3c)? as usize + 4;
@@ -33,8 +33,8 @@ impl Pe {
             "invalid PE signature"
         );
         ensure!(
-            Self::u16(&bytes, coff)? == 0x8664,
-            "expected AMD64 executable"
+            Self::u16(&bytes, coff)? == machine,
+            "incorrect PE machine: expected {machine:#06x}"
         );
         let count = Self::u16(&bytes, coff + 2)? as usize;
         ensure!(count <= 96, "invalid section count");
@@ -136,8 +136,8 @@ impl Pe {
     }
 }
 
-fn verify(path: &Path, gui: bool) -> Result<()> {
-    let pe = Pe::open(path)?;
+fn verify(path: &Path, gui: bool, machine: u16) -> Result<()> {
+    let pe = Pe::open(path, machine)?;
     let subsystem = Pe::u16(&pe.bytes, pe.optional + 68)?;
     ensure!(
         subsystem == if gui { 2 } else { 3 },
@@ -170,6 +170,11 @@ fn verify(path: &Path, gui: bool) -> Result<()> {
             manifest.contains("level=\"requireAdministrator\""),
             "missing GUI elevation manifest"
         );
+        ensure!(
+            !manifest.contains("processorArchitecture=\"amd64\"")
+                && !manifest.contains("processorArchitecture=\"x86\""),
+            "GUI manifest must support both x64 and ARM64"
+        );
         for id in 1..=6 {
             ensure!(
                 !pe.resource(14, id)?.is_empty(),
@@ -191,13 +196,25 @@ fn verify(path: &Path, gui: bool) -> Result<()> {
     Ok(())
 }
 fn main() -> Result<()> {
-    let dir = std::env::args_os()
-        .nth(1)
-        .context("usage: verify_windows RELEASE_DIRECTORY")?;
+    let mut args = std::env::args_os().skip(1);
+    let dir = args
+        .next()
+        .context("usage: verify_windows RELEASE_DIRECTORY [x64|arm64]")?;
+    let arch = args.next().unwrap_or_else(|| "x64".into());
+    let machine = match arch.to_str() {
+        Some("x64") => 0x8664,
+        Some("arm64") => 0xaa64,
+        _ => anyhow::bail!("unsupported Windows architecture: {arch:?}"),
+    };
+    ensure!(args.next().is_none(), "unexpected verifier argument");
     let dir = Path::new(&dir);
     for name in ["sysu_netauth", "sysu_netauth_service", "sysu_netauth_gui"] {
-        verify(&dir.join(format!("{name}.exe")), name.ends_with("gui"))
-            .with_context(|| format!("verify {name}"))?;
+        verify(
+            &dir.join(format!("{name}.exe")),
+            name.ends_with("gui"),
+            machine,
+        )
+        .with_context(|| format!("verify {name}"))?;
     }
     Ok(())
 }

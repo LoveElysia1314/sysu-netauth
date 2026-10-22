@@ -136,7 +136,9 @@ fn pcap_api() -> Result<Arc<PcapApi>> {
         };
         ensure!(
             !module.is_null(),
-            "Npcap is unavailable. Install Npcap from https://npcap.com/#download"
+            "Npcap is unavailable for {} ({}). Install the official Npcap package from https://npcap.com/#download; it selects the correct architecture automatically",
+            std::env::consts::ARCH,
+            io::Error::last_os_error()
         );
         macro_rules! symbol {
             ($name:literal,$ty:ty) => {{

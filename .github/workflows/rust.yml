@@ -16,7 +16,16 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            arch: x64
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            arch: x64
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            arch: arm64
+            target: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     env:
       NETAUTH_RELEASE_TAG: ${{ inputs.release_tag }}
@@ -37,12 +46,24 @@ jobs:
         run: python scripts/release_version.py --write
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: stable-${{ matrix.target }}
           components: rustfmt, clippy
+      - name: Verify Windows Rust host architecture
+        if: runner.os == 'Windows'
+        env:
+          EXPECTED_HOST: ${{ matrix.target }}
+        run: |
+          $hostLine = rustc -vV | Select-String '^host: '
+          if ($LASTEXITCODE -ne 0 -or "$hostLine" -ne "host: $env:EXPECTED_HOST") {
+            throw "Unexpected Rust host: $hostLine"
+          }
       - if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: host-${{ matrix.os }}
+          shared-key: host-${{ matrix.os }}-${{ matrix.arch }}
           cache-bin: false
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
@@ -58,15 +79,17 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo -n --
         run: cargo test --locked --test linux_network -- --ignored --nocapture
       - if: runner.os == 'Windows'
-        run: ./apps/rust/scripts/build.ps1 -SkipInstaller
+        run: ./apps/rust/scripts/build.ps1 -SkipInstaller -Target ${{ matrix.target }}
       - if: runner.os == 'Windows' && inputs.release_tag != ''
-        run: Copy-Item build/release-version.json apps/rust/dist/sysu_netauth/
+        run: |
+          $dist = if ('${{ matrix.arch }}' -eq 'arm64') { 'apps/rust/dist/arm64/sysu_netauth' } else { 'apps/rust/dist/sysu_netauth' }
+          Copy-Item build/release-version.json $dist
       - if: runner.os == 'Linux'
         run: sh apps/rust/scripts/build.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: sysu-netauth-Rust-${{ runner.os }}${{ runner.os == 'Windows' && '-msvc' || '' }}
-          path: apps/rust/dist/
+          name: sysu-netauth-Rust-${{ runner.os }}${{ runner.os == 'Windows' && '-msvc' || '' }}${{ matrix.arch == 'arm64' && '-arm64' || '' }}
+          path: apps/rust/dist/${{ matrix.arch == 'arm64' && 'arm64/' || '' }}
           if-no-files-found: error
           overwrite: true
   windows-gnu:
@@ -174,6 +197,16 @@ jobs:
           overwrite: true
   windows-cross:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            arch: x64
+            directory: apps/rust/dist
+          - target: aarch64-pc-windows-msvc
+            arch: arm64
+            directory: apps/rust/dist/arm64
     env:
       # Keep the SDK outside target/, which rust-cache prunes before saving.
       XWIN_CACHE_DIR: ${{ github.workspace }}/.cache/xwin
@@ -195,14 +228,14 @@ jobs:
         run: python scripts/release_version.py --write
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: ${{ matrix.target }}
       - id: cross-tools
         uses: ./.github/actions/cache-apt
         with:
           packages: clang llvm lld zip
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: linux-windows-msvc
+          shared-key: linux-windows-msvc-${{ matrix.arch }}
           cache-bin: false
           env-vars: CARGO CC CFLAGS CXX CMAKE RUST XWIN NETAUTH_RC
       - name: Cache cargo-xwin executable
@@ -220,11 +253,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.XWIN_CACHE_DIR }}
-          key: xwin-v2-${{ runner.os }}-${{ runner.arch }}-x86_64-${{ env.CARGO_XWIN_VERSION }}-${{ hashFiles('apps/rust/scripts/build-windows.sh') }}
-      - run: sh apps/rust/scripts/build-windows.sh
+          key: xwin-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ env.CARGO_XWIN_VERSION }}-${{ hashFiles('apps/rust/scripts/build-windows.sh') }}
+      - run: sh apps/rust/scripts/build-windows.sh ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
-          name: sysu-netauth-Rust-Windows-msvc-from-Linux
-          path: apps/rust/dist/sysu-netauth-windows-x64.zip
+          name: sysu-netauth-Rust-Windows-msvc-from-Linux-${{ matrix.arch }}
+          path: ${{ matrix.directory }}/sysu-netauth-windows-${{ matrix.arch }}.zip
           if-no-files-found: error
           overwrite: true

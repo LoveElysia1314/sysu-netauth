@@ -18,6 +18,7 @@ The workflow can also run manually on a release tag. Existing releases receive t
 | Application | Installer | Checksums |
 | --- | --- | --- |
 | Rust, MSVC x64 | `SYSUNetAuth_Rust_msvc_x64_Setup_v<version>.exe` | `SHA256SUMS-rust-msvc-x64.txt` |
+| Rust, MSVC ARM64 | `SYSUNetAuth_Rust_msvc_arm64_Setup_v<version>.exe` | `SHA256SUMS-rust-msvc-arm64.txt` |
 | Rust, GNU x64 | `SYSUNetAuth_Rust_gnu_x64_Setup_v<version>.exe` | `SHA256SUMS-rust-gnu-x64.txt` |
 | Python, x64 | `SYSUNetAuth_Python_x64_Setup_v<version>.exe` | `SHA256SUMS-python-x64.txt` |
 
@@ -43,6 +44,8 @@ Copy-Item build/release-version.json apps/rust/dist/sysu_netauth/
 Copy-Item build/release-version.json apps/rust/dist/gnu/sysu_netauth/
 Copy-Item build/release-version.json apps/python/dist/sysu_netauth/
 python scripts/package_windows.py --variant rust --input-dir apps/rust/dist/sysu_netauth
+Copy-Item build/release-version.json apps/rust/dist/arm64/sysu_netauth/
+python scripts/package_windows.py --variant rust --arch arm64 --input-dir apps/rust/dist/arm64/sysu_netauth
 python scripts/package_windows.py --variant rust --abi gnu --input-dir apps/rust/dist/gnu/sysu_netauth
 python scripts/package_windows.py --variant python --input-dir apps/python/dist/sysu_netauth
 ```
