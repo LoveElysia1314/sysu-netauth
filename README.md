@@ -20,7 +20,7 @@
 
 Rust 的 MSVC 与 GNU 安装包功能相同，一般选择 MSVC。Rust 和 Python 共用服务与配置，不能同时运行。版本切换与故障排查见 [Windows 安装说明](docs/WINDOWS.md)。
 
-Windows ARM64 与 macOS 支持仍处于实验阶段。
+平台支持级别见 [Rust 文档](apps/rust/README.md)。macOS 为实验性支持。
 
 发行页同时提供 Windows 便携 ZIP、Linux x64 与 macOS 程序包，以及 SHA-256 校验文件。macOS 使用方法见 [macOS 文档](apps/rust/docs/MACOS.md)。
 
