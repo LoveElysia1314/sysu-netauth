@@ -1,10 +1,13 @@
-"""Every platform package must be present and intact before uploading a release."""
+"""Required release assets stay complete while advisory platforms publish independently."""
 
 import hashlib
 import importlib.util
 import io
 import json
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -115,7 +118,7 @@ class ReleaseAssetsTests(unittest.TestCase):
 
     def test_missing_macos_architecture_blocks_release(self):
         self.macos.pop("x64")
-        with self.assertRaisesRegex(ValueError, "requires both"):
+        with self.assertRaisesRegex(ValueError, "Missing macOS archives"):
             self.prepare()
 
     def test_macos_from_another_commit_blocks_release(self):
@@ -127,6 +130,71 @@ class ReleaseAssetsTests(unittest.TestCase):
         self.write_macos("x64", self.info, omit="uninstall-macos.sh")
         with self.assertRaises(KeyError):
             self.prepare()
+
+    def required_platforms(self):
+        return {platform for platform, tier in assets.PLATFORM_TIERS.items() if tier <= 2}
+
+    def test_required_release_does_not_depend_on_macos(self):
+        for path in self.macos.values():
+            path.unlink()
+        result = assets.prepare(self.metadata, self.linux, self.output,
+                                macos_inputs={}, platforms=self.required_platforms())
+        self.assertEqual(len(result), 14)
+        self.assertEqual(sum(path.suffix == ".exe" for path in result), 4)
+        self.assertTrue(any("linux_x64" in path.name for path in result))
+        self.assertFalse(any("macos" in path.name for path in result))
+
+    def test_required_tiers_still_reject_missing_arm64_and_linux(self):
+        with self.assertRaisesRegex(ValueError, "Missing Linux archive"):
+            assets.prepare(self.metadata, None, self.output,
+                           macos_inputs={}, platforms=self.required_platforms())
+        for path in self.output.glob("*msvc*arm64*"):
+            path.unlink()
+        with self.assertRaisesRegex(ValueError, "missing=.*msvc_arm64"):
+            assets.prepare(self.metadata, self.linux, self.output,
+                           macos_inputs={}, platforms=self.required_platforms())
+
+    def test_each_advisory_architecture_publishes_without_other_platforms(self):
+        required = assets.prepare(self.metadata, self.linux, self.output,
+                                  macos_inputs={}, platforms=self.required_platforms())
+        published = {path.name for path in required}
+        for arch in ("arm64", "x64"):
+            output = self.root / f"advisory-{arch}"
+            result = assets.prepare(self.metadata, None, output, macos_inputs={arch: self.macos[arch]},
+                                    platforms={f"rust-macos-{arch}"})
+            self.assertEqual(len(result), 2)
+            self.assertEqual({path.suffix for path in result}, {".gz", ".txt"})
+            for path in result:
+                self.assertNotIn(path.name, published)
+                shutil.copyfile(path, self.output / path.name)
+                published.add(path.name)
+        expected = {name for checksum, names in assets.expected_assets(self.info).items() for name in (checksum, *names)}
+        self.assertEqual(published, expected)
+
+    def test_bad_advisory_artifact_fails_its_own_validation(self):
+        self.write_macos("arm64", self.info | {"commit": "another-commit"})
+        with self.assertRaisesRegex(ValueError, "macos-arm64.*version/commit"):
+            assets.prepare(self.metadata, None, self.root / "advisory-bad",
+                           macos_inputs={"arm64": self.macos["arm64"]}, platforms={"rust-macos-arm64"})
+        self.assertFalse((self.root / "advisory-bad").exists())
+
+    def test_cli_selects_required_tiers_and_one_advisory_architecture(self):
+        command = [sys.executable, str(ROOT / "scripts/prepare_release_assets.py"), "--metadata", str(self.metadata)]
+        required = subprocess.run(command + ["--tier", "1", "--tier", "2", "--linux-input", str(self.linux),
+                                             "--output-dir", str(self.output)], capture_output=True, text=True, check=True)
+        self.assertEqual(len(required.stdout.splitlines()), 14)
+        advisory = subprocess.run(command + ["--tier", "3", "--macos-arch", "arm64",
+                                             "--macos-arm64-input", str(self.macos["arm64"]),
+                                             "--output-dir", str(self.root / "advisory-cli")],
+                                  capture_output=True, text=True, check=True)
+        self.assertEqual(len(advisory.stdout.splitlines()), 2)
+        self.assertIn("macos_arm64", advisory.stdout)
+        self.assertNotIn("macos_x64", advisory.stdout)
+
+    def test_invalid_platform_selection_cannot_produce_an_empty_release(self):
+        for selection in (set(), {"unknown-platform"}):
+            with self.assertRaisesRegex(ValueError, "Invalid release platform selection"):
+                assets.prepare(self.metadata, None, self.output, macos_inputs={}, platforms=selection)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ permissions:
   contents: read
 jobs:
   windows:
+    name: Tier 1 / Windows AMD64 (Python)
     runs-on: windows-latest
     env:
       # Redirected Windows output can otherwise use cp1252. Keep the parent

@@ -43,10 +43,16 @@ jobs:
           if-no-files-found: error
           overwrite: true
   packaging-tests:
+    name: Tier ${{ matrix.tier }} / Packaging tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - os: windows-latest
+            tier: 1
+          - os: ubuntu-latest
+            tier: 2
+      fail-fast: false
     env:
       PYTHONUTF8: '1'
       PYTHONIOENCODING: utf-8
@@ -62,16 +68,26 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
       - run: python -m unittest discover -s tests -v
   rust:
+    name: Tier 1–2 / Rust
     needs: version
     uses: ./.github/workflows/rust.yml
     with:
       release_tag: ${{ needs.version.outputs.tag }}
+      skip_macos: true
+  macos:
+    name: Tier 3 / macOS (advisory)
+    needs: version
+    uses: ./.github/workflows/macos.yml
+    with:
+      release_tag: ${{ needs.version.outputs.tag }}
   python:
+    name: Tier 1 / Python
     needs: version
     uses: ./.github/workflows/python.yml
     with:
       release_tag: ${{ needs.version.outputs.tag }}
   installers:
+    name: Tier ${{ matrix.tier }} / Installer (${{ matrix.label }})
     needs: [version, rust, python, packaging-tests]
     runs-on: ${{ matrix.os }}
     strategy:
@@ -80,6 +96,7 @@ jobs:
         include:
           - variant: rust
             os: windows-latest
+            tier: 1
             arch: x64
             abi: msvc
             label: rust-msvc-x64
@@ -88,6 +105,7 @@ jobs:
             input: dist/build-input/sysu_netauth
           - variant: rust
             os: windows-11-arm
+            tier: 2
             arch: arm64
             abi: msvc
             label: rust-msvc-arm64
@@ -95,6 +113,7 @@ jobs:
             input: dist/build-input/sysu_netauth
           - variant: rust
             os: windows-latest
+            tier: 1
             arch: x64
             abi: gnu
             label: rust-gnu-x64
@@ -102,6 +121,7 @@ jobs:
             input: dist/build-input/sysu_netauth
           - variant: python
             os: windows-latest
+            tier: 1
             arch: x64
             abi: ''
             label: python-x64
@@ -156,6 +176,7 @@ jobs:
           if-no-files-found: error
           overwrite: true
   release-assets:
+    name: Tier 1–2 / Release assets
     if: startsWith(github.ref, 'refs/tags/')
     needs: [version, installers]
     runs-on: ubuntu-latest
@@ -174,19 +195,13 @@ jobs:
           path: dist/linux-build
       - uses: actions/download-artifact@v4
         with:
-          pattern: sysu-netauth-Rust-macOS-*
-          path: dist/macos-build
-          merge-multiple: true
-      - uses: actions/download-artifact@v4
-        with:
           name: sysu-netauth-release-metadata
           path: build
-      - name: Prepare and verify the complete release set
+      - name: Prepare and verify all required release assets
         run: >-
           python3 scripts/prepare_release_assets.py --metadata build/release-version.json
+          --tier 1 --tier 2
           --linux-input dist/linux-build/sysu-netauth-linux-x64.tar.gz
-          --macos-arm64-input dist/macos-build/sysu-netauth-macos-arm64.tar.gz
-          --macos-x64-input dist/macos-build/sysu-netauth-macos-x64.tar.gz
           --output-dir dist/release-assets
       - name: Upload packages or create draft release
         env:
@@ -206,3 +221,42 @@ jobs:
               --prerelease="$PRERELEASE" \
               --notes-file .github/windows-release-notes.md
           fi
+  macos-release-assets:
+    name: Tier 3 / macOS ${{ matrix.arch }} release assets (advisory)
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [version, macos, release-assets]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: sysu-netauth-Rust-macOS-${{ matrix.arch }}
+          path: dist/macos-build
+      - uses: actions/download-artifact@v4
+        with:
+          name: sysu-netauth-release-metadata
+          path: build
+      - name: Verify advisory release assets
+        env:
+          MACOS_ARCH: ${{ matrix.arch }}
+        run: >-
+          python3 scripts/prepare_release_assets.py --metadata build/release-version.json
+          --tier 3 --macos-arch "$MACOS_ARCH"
+          --macos-"$MACOS_ARCH"-input "dist/macos-build/sysu-netauth-macos-$MACOS_ARCH.tar.gz"
+          --output-dir dist/release-assets
+      - name: Upload verified macOS packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release upload "$RELEASE_TAG" dist/release-assets/* --clobber
+      - name: Report missing advisory assets
+        if: failure()
+        run: echo '::warning::Tier 3 macOS assets were not uploaded; required Windows and Linux assets are unaffected.'

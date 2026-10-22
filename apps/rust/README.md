@@ -1,6 +1,13 @@
 # SYSU NetAuth Rust 版
 
-支持 Windows 10/11 x64 / ARM64（GUI、CLI、后台服务）、Linux x64（CLI、systemd）和 macOS 11+（CLI、launchd）。Windows ARM64 与 macOS 支持为实验性。
+| 支持级别 | 平台 | 界面与服务 |
+| --- | --- | --- |
+| Tier 1 | Windows 10/11 AMD64 | GUI、CLI、后台服务 |
+| Tier 2 | Windows 10/11 AARCH64 | GUI、CLI、后台服务 |
+| Tier 2 | Linux AMD64 | CLI、systemd |
+| Tier 3 | macOS 11+ Apple Silicon / Intel | CLI、launchd |
+
+Tier 1 和 Tier 2 的构建与测试为发行必需检查。Tier 3 为实验性支持，失败不阻塞其他平台发行。
 
 ## Windows 安装
 

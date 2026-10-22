@@ -13,6 +13,8 @@ Versions come from Git tags. Rust uses `git-version`; Python uses `setuptools-sc
 
 Commit the release changes, create a tag in one of these formats, and push it. **Release packages** builds both applications and creates a draft GitHub release. Prerelease tags produce prereleases. Review installation, upgrade and service operation before publishing the draft.
 
+Tier 1 (Windows AMD64) and Tier 2 (Windows AARCH64, Linux AMD64) builds and tests must pass. Tier 3 (macOS) is advisory; successful macOS packages are added independently without blocking Windows or Linux releases.
+
 The workflow can also run manually on a release tag. Existing releases receive the installers without changes to their notes or publication status. Reruns replace assets with matching filenames.
 
 | Application | Installer | Checksums |
