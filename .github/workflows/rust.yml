@@ -47,9 +47,9 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
-      - name: Test Windows installer process handling
+      - name: Test Windows installer process and service handling
         if: runner.os == 'Windows'
-        run: python -m unittest discover -s tests -p test_windows_installer_process.py -v
+        run: python -m unittest discover -s tests -p "test_windows_installer*.py" -v
       - name: Test isolated Linux networking
         if: runner.os == 'Linux'
         env:

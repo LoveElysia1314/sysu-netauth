@@ -13,9 +13,10 @@ Run Cargo commands from the repository root and Python application commands from
 
 Both installers use the `SYSUNetAuth` service and `%ProgramData%\SYSUNetAuth` settings directory. Install one version at a time and use its matching GUI and service.
 
-1. Fully exit the GUI and stop the service: `sc.exe stop SYSUNetAuth`.
-2. Back up `%ProgramData%\SYSUNetAuth`; it contains credentials.
-3. Run the selected version's installer.
+1. Back up `%ProgramData%\SYSUNetAuth`; it contains credentials.
+2. Run the selected version's installer.
+
+See [Windows installation and maintenance](WINDOWS.md) for requirements and troubleshooting.
 
 Rust saves the Python configuration as `config.json.python-backup` on first migration. To restore it when returning to Python, stop the GUI and service first, then restore the intended backup; its credentials and settings may be older.
 

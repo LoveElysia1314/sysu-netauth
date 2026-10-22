@@ -11,7 +11,7 @@ DisableFinishedPage=yes
 OutputBaseFilename=installer-process-check
 
 [Code]
-#include "../../apps/rust/scripts/process.iss"
+#include "../../scripts/windows/process.iss"
 
 function InitializeSetup: Boolean;
 var

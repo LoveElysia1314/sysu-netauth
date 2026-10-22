@@ -8,7 +8,7 @@
 
 在设置窗口填写 NetID 和密码，启用自动认证与服务独立运行。退出 GUI 后服务继续认证，并在睡眠、休眠恢复后重新连接。请先退出其他 802.1X 客户端。
 
-配置与日志：`%ProgramData%\SYSUNetAuth\`。从 Python 版切换前请阅读 [版本切换说明](../../docs/ARCHITECTURE.md)。
+配置与日志：`%ProgramData%\SYSUNetAuth\`。版本切换与故障排查见 [Windows 安装说明](../../docs/WINDOWS.md)。
 
 窗口跟随 Windows 的应用浅色/深色设置，无需重启。以下为 Wine 下运行的 Rust GUI，使用示例数据。
 

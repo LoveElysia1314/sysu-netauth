@@ -17,7 +17,7 @@
 
 两个版本均需 [Npcap](https://npcap.com/#download)。安装后打开设置窗口，填写 NetID 和密码并认证。启用「服务独立运行」后，退出 GUI 仍会保持认证。Rust 版支持睡眠、休眠后自动重认证。
 
-两个版本共用 Windows 服务与设置目录；切换前请退出 GUI、停止服务并备份 `%ProgramData%\SYSUNetAuth`。详见 [版本切换](docs/ARCHITECTURE.md)。
+Rust 的 MSVC 与 GNU 安装包功能相同，一般选择 MSVC。Rust 和 Python 共用服务与配置，不能同时运行。版本切换与故障排查见 [Windows 安装说明](docs/WINDOWS.md)。
 
 发行页同时提供 Windows 便携二进制 ZIP、Linux x64 程序包和 SHA-256 校验文件。
 

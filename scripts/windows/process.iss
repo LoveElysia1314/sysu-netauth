@@ -48,17 +48,26 @@ function SetupTranslate(var Message: TSetupMessage): Integer;
 function SetupDispatch(var Message: TSetupMessage): Integer;
   external 'DispatchMessageW@user32.dll stdcall';
 
+procedure PumpSetupMessages;
+var Message: TSetupMessage; Count: Integer;
+begin
+  for Count := 1 to 32 do begin
+    if SetupPeek(Message, 0, 0, 0, 1) = 0 then Break;
+    SetupTranslate(Message);
+    SetupDispatch(Message);
+  end;
+end;
+
 function RunSetupCommand(Filename, Params: String; TimeoutSeconds: Integer;
   var Code: Integer): Boolean;
 var
   Startup: TSetupStartupInfo;
   Security: TSetupSecurityAttributes;
   Process: TSetupProcessInfo;
-  Message: TSetupMessage;
   CommandLine: String;
   Deadline: Int64;
   WaitResult, ExitCode: Cardinal;
-  Count, Created: Integer;
+  Created: Integer;
   NullHandle: THandle;
 begin
   Result := False;
@@ -106,11 +115,7 @@ begin
         Exit;
       end;
       { Bound the message batch too, so window traffic cannot defeat the timeout. }
-      for Count := 1 to 32 do begin
-        if SetupPeek(Message, 0, 0, 0, 1) = 0 then Break;
-        SetupTranslate(Message);
-        SetupDispatch(Message);
-      end;
+      PumpSetupMessages;
     until SetupTicks >= Deadline;
     Code := 1460; { ERROR_TIMEOUT }
     Log('Setup command timed out: ' + Filename);
