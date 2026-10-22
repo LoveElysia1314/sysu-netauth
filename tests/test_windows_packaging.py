@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import struct
 import sys
 import tempfile
 import unittest
@@ -50,8 +51,7 @@ class WindowsPackagingTests(unittest.TestCase):
         self.addCleanup(self.root_patch.stop)
         self.source = self.root / "downloaded artifact"
         self.source.mkdir()
-        for name in ("sysu_netauth.exe", "sysu_netauth_service.exe", "sysu_netauth_gui.exe"):
-            (self.source / name).write_bytes(b"MZ test input: never executed")
+        self.write_binaries("x64")
         (self.source / "_internal").mkdir()
         (self.source / "_internal/python313.dll").write_bytes(b"runtime fixture")
         self.output = self.root / "release output"
@@ -62,6 +62,15 @@ class WindowsPackagingTests(unittest.TestCase):
         versioning.stamp(self.root, self.info)
         (self.source / "release-version.json").write_text(json.dumps(self.info), encoding="utf-8")
         self.python_version = PYTHON_VERSION
+
+    def write_binaries(self, arch):
+        binary = bytearray(70)
+        binary[:2] = b"MZ"
+        struct.pack_into("<I", binary, 0x3c, 64)
+        binary[64:68] = b"PE\0\0"
+        struct.pack_into("<H", binary, 68, {"x64": 0x8664, "arm64": 0xaa64}[arch])
+        for name in ("sysu_netauth.exe", "sysu_netauth_service.exe", "sysu_netauth_gui.exe"):
+            (self.source / name).write_bytes(binary)
 
     def compile(self, command, **kwargs):
         self.assertTrue(kwargs["check"])
@@ -164,6 +173,39 @@ class WindowsPackagingTests(unittest.TestCase):
         with patch.object(packaging.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)):
             with self.assertRaisesRegex(FileNotFoundError, "did not produce"):
                 packaging.package("rust", self.source, self.output, Path("ISCC.exe"))
+
+    def test_arm64_installer_portable_and_checksums_are_distinct(self):
+        self.write_binaries("arm64")
+        with patch.object(packaging.subprocess, "run", side_effect=self.compile) as compiler:
+            setup, portable, checksums = packaging.package("rust", self.source, self.output, Path("ISCC.exe"), arch="arm64")
+        self.assertEqual(setup.name, "SYSUNetAuth_Rust_msvc_arm64_Setup_v1.2.3.exe")
+        self.assertIn("/DMyAppArch=arm64", compiler.call_args.args[0])
+        self.assertEqual(checksums.name, "SHA256SUMS-rust-msvc-arm64.txt")
+        with zipfile.ZipFile(portable) as archive:
+            self.assertEqual(len(archive.namelist()), 3)
+            for name in archive.namelist():
+                self.assertEqual(struct.unpack_from("<H", archive.read(name), 68)[0], 0xaa64)
+        for line in checksums.read_text(encoding="utf-8").splitlines():
+            digest, name = line.split("  ")
+            self.assertEqual(digest, hashlib.sha256((self.output / name).read_bytes()).hexdigest())
+
+    def test_mislabeled_and_mixed_architecture_artifacts_are_rejected(self):
+        with patch.object(packaging.subprocess, "run") as compiler:
+            with self.assertRaisesRegex(ValueError, "does not match arm64"):
+                packaging.package("rust", self.source, self.output, Path("ISCC.exe"), arch="arm64")
+            x64_gui = (self.source / "sysu_netauth_gui.exe").read_bytes()
+            self.write_binaries("arm64")
+            (self.source / "sysu_netauth_gui.exe").write_bytes(x64_gui)
+            with self.assertRaisesRegex(ValueError, "does not match arm64.*gui"):
+                packaging.package("rust", self.source, self.output, Path("ISCC.exe"), arch="arm64")
+            compiler.assert_not_called()
+
+    def test_unsupported_arm64_variants_are_rejected(self):
+        with patch.object(packaging.subprocess, "run") as compiler:
+            for variant, abi in (("python", None), ("rust", "gnu")):
+                with self.assertRaisesRegex(ValueError, "ARM64 requires"):
+                    packaging.package(variant, self.source, self.output, Path("ISCC.exe"), abi=abi, arch="arm64")
+            compiler.assert_not_called()
 
     def test_invalid_or_misapplied_abi_is_rejected_before_compilation(self):
         with patch.object(packaging.subprocess, "run") as compile_setup:

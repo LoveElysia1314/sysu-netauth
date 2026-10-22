@@ -18,6 +18,7 @@ def expected_assets(info: dict) -> dict[str, list[str]]:
     groups = {}
     for label, version in (
         ("Rust_msvc_x64", info["version"]),
+        ("Rust_msvc_arm64", info["version"]),
         ("Rust_gnu_x64", info["version"]),
         ("Python_x64", info["python_version"]),
     ):

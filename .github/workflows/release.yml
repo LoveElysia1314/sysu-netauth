@@ -73,23 +73,36 @@ jobs:
       release_tag: ${{ needs.version.outputs.tag }}
   installers:
     needs: [version, rust, python, packaging-tests]
-    runs-on: windows-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - variant: rust
+            os: windows-latest
+            arch: x64
             abi: msvc
             label: rust-msvc-x64
             artifact: sysu-netauth-Rust-Windows-msvc
             # Rust CI uploads dist/, including its sysu_netauth subdirectory.
             input: dist/build-input/sysu_netauth
           - variant: rust
+            os: windows-11-arm
+            arch: arm64
+            abi: msvc
+            label: rust-msvc-arm64
+            artifact: sysu-netauth-Rust-Windows-msvc-arm64
+            input: dist/build-input/sysu_netauth
+          - variant: rust
+            os: windows-latest
+            arch: x64
             abi: gnu
             label: rust-gnu-x64
             artifact: sysu-netauth-Rust-Windows-gnu
             input: dist/build-input/sysu_netauth
           - variant: python
+            os: windows-latest
+            arch: x64
             abi: ''
             label: python-x64
             artifact: sysu-netauth-Python-Windows
@@ -130,11 +143,12 @@ jobs:
         env:
           APP_VARIANT: ${{ matrix.variant }}
           APP_ABI: ${{ matrix.abi }}
+          APP_ARCH: ${{ matrix.arch }}
           APP_INPUT: ${{ matrix.input }}
         run: |
           $abiArgs = @()
           if ($env:APP_ABI) { $abiArgs = @('--abi', $env:APP_ABI) }
-          python scripts/package_windows.py --variant "$env:APP_VARIANT" --input-dir "$env:APP_INPUT" @abiArgs
+          python scripts/package_windows.py --variant "$env:APP_VARIANT" --arch "$env:APP_ARCH" --input-dir "$env:APP_INPUT" @abiArgs
       - uses: actions/upload-artifact@v4
         with:
           name: sysu-netauth-Windows-installers-${{ matrix.label }}

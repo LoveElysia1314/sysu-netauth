@@ -1,6 +1,7 @@
-Choose one Windows x64 setup installer:
+Choose the Windows setup installer for your machine:
 
 - **Rust_msvc_x64**: Rust version, including sleep/hibernate recovery.
+- **Rust_msvc_arm64**: ARM64 Rust version for Windows on ARM (experimental).
 - **Rust_gnu_x64**: Rust version built with the GNU toolchain.
 - **Python_x64**: Python version.
 
