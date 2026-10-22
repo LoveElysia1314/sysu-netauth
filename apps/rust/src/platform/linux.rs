@@ -1,5 +1,5 @@
 use super::{Adapter, Monitor, virtual_mac, virtual_name};
-use crate::{engine::Event, protocol::MAX_FRAME};
+use crate::{engine::Signal, protocol::MAX_FRAME};
 use anyhow::{Context, Result, ensure};
 use std::{
     fs,
@@ -9,7 +9,7 @@ use std::{
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     path::Path,
     ptr,
-    sync::{Arc, mpsc::SyncSender},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -242,7 +242,7 @@ pub fn adapters() -> Result<Vec<Adapter>> {
     Ok(result)
 }
 
-pub fn monitor(events: SyncSender<Event>) -> Result<Monitor> {
+pub fn monitor(events: Arc<Signal>) -> Result<Monitor> {
     let socket = fd(unsafe {
         libc::socket(
             libc::AF_NETLINK,
@@ -280,7 +280,7 @@ pub fn monitor(events: SyncSender<Event>) -> Result<Monitor> {
                         0,
                     );
                 }
-                let _ = events.try_send(Event::NetworkChanged);
+                events.notify();
             }
         })?;
     Ok(Monitor {
@@ -417,7 +417,7 @@ pub fn cancellable_wait(stop: &Cancel, duration: Duration) -> bool {
     unsafe { libc::poll(&mut p, 1, duration.as_millis().min(i32::MAX as u128) as i32) == 0 }
 }
 
-pub fn signal_thread(events: SyncSender<Event>) -> Result<()> {
+pub fn signal_thread(events: Arc<Signal>) -> Result<()> {
     let mut set: libc::sigset_t = unsafe { mem::zeroed() };
     unsafe {
         libc::sigemptyset(&mut set);
@@ -436,7 +436,7 @@ pub fn signal_thread(events: SyncSender<Event>) -> Result<()> {
             unsafe {
                 libc::read(socket.as_raw_fd(), info.as_mut_ptr().cast(), info.len());
             }
-            let _ = events.send(Event::Stop);
+            events.notify();
         })?;
     Ok(())
 }

@@ -94,11 +94,11 @@ def package(variant: str, input_dir: Path, output_dir: Path, compiler: Path, *, 
         basename = f"SYSUNetAuth_{label}_Setup_v{version}"
         output_dir.mkdir(parents=True, exist_ok=True)
         setup = output_dir / f"{basename}.exe"
-        archive = output_dir / f"{basename}.zip"
+        obsolete_archive = output_dir / f"{basename}.zip"
         portable = output_dir / f"SYSUNetAuth_{label}_Portable_v{version}.zip"
         checksums = output_dir / f"SHA256SUMS-{identifier}.txt"
         # A compiler that fails or emits no setup must never reuse stale output.
-        for path in (setup, archive, portable, checksums):
+        for path in (setup, obsolete_archive, portable, checksums):
             path.unlink(missing_ok=True)
         subprocess.run(
             [str(compiler), f"/O{output_dir}", f"/F{basename}", *defines, str(script)],
@@ -107,8 +107,6 @@ def package(variant: str, input_dir: Path, output_dir: Path, compiler: Path, *, 
         )
         if not setup.is_file() or setup.stat().st_size == 0:
             raise FileNotFoundError(f"Inno Setup did not produce {setup}")
-        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
-            bundle.write(setup, setup.name)
         payload = [input_dir / name for name in required] if variant == "rust" else sorted(
             path for path in input_dir.rglob("*") if path.is_file()
         )
@@ -116,11 +114,11 @@ def package(variant: str, input_dir: Path, output_dir: Path, compiler: Path, *, 
             for path in payload:
                 bundle.write(path, (Path("sysu_netauth") / path.relative_to(input_dir)).as_posix())
         hashes = []
-        for path in (setup, archive, portable):
+        for path in (setup, portable):
             with path.open("rb") as stream:
                 hashes.append(f"{hashlib.file_digest(stream, 'sha256').hexdigest()}  {path.name}\n")
         checksums.write_text("".join(hashes), encoding="utf-8")
-        return [setup, archive, portable, checksums]
+        return [setup, portable, checksums]
     finally:
         if generated_script is not None:
             generated_script.unlink(missing_ok=True)

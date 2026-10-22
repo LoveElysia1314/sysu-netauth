@@ -144,10 +144,11 @@ fn direct(
         })?
     };
     let (tx, rx) = mpsc::sync_channel(256);
+    let interrupt = std::sync::Arc::new(netauth::engine::Signal::new(tx.clone(), || Event::Stop));
     #[cfg(unix)]
-    platform::signal_thread(tx.clone())?;
+    platform::signal_thread(interrupt.clone())?;
     #[cfg(windows)]
-    platform::register_stop_sender(tx.clone());
+    platform::register_stop_notifier(interrupt.clone());
     let mut last = "no EAP server response".to_string();
     for adapter in adapters {
         let session = platform::Session::open(&adapter, 1, tx.clone())?;
@@ -157,9 +158,16 @@ fn direct(
         let mut peer = None;
         let mut eap_success = false;
         let stop = std::sync::Arc::new(platform::Cancel::new()?);
-        let mut checker = None;
+        let mut checker: Option<std::thread::JoinHandle<()>> = None;
         let mut failure = false;
         while Instant::now() < deadline {
+            if interrupt.take() {
+                stop.set();
+                if let Some(t) = checker.take() {
+                    let _ = t.join();
+                }
+                bail!("interrupted");
+            }
             let now = Instant::now();
             let wait = deadline
                 .min(if peer.is_none() { next_start } else { deadline })
@@ -207,7 +215,11 @@ fn direct(
                             for round in 0..3 {
                                 for ip in [[119, 29, 29, 29], [114, 114, 114, 114]] {
                                     if platform::ping(ip.into(), &cancel) {
-                                        let _ = tx.try_send(Event::Connectivity(1, true));
+                                        platform::deliver(
+                                            &tx,
+                                            Event::Connectivity(1, true),
+                                            &cancel,
+                                        );
                                         return;
                                     }
                                 }
@@ -217,7 +229,7 @@ fn direct(
                                     return;
                                 }
                             }
-                            let _ = tx.try_send(Event::Connectivity(1, false));
+                            platform::deliver(&tx, Event::Connectivity(1, false), &cancel);
                         }));
                     }
                 }

@@ -1,7 +1,7 @@
 use super::{Adapter, Monitor, virtual_mac, virtual_name};
 use crate::{
     config::Paths,
-    engine::{Event, PowerEvent, PowerNotifier},
+    engine::{PowerEvent, PowerNotifier, Signal},
 };
 use anyhow::{Context, Result, bail, ensure};
 use std::{
@@ -12,7 +12,7 @@ use std::{
     os::windows::ffi::OsStrExt,
     path::Path,
     ptr,
-    sync::{Arc, Mutex, OnceLock, mpsc::SyncSender},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 use windows_sys::Win32::{
@@ -398,34 +398,33 @@ pub fn adapters() -> Result<Vec<Adapter>> {
     }
     bail!("adapter list kept changing")
 }
-pub fn monitor(events: SyncSender<Event>) -> Result<Monitor> {
+pub fn monitor(events: Arc<Signal>) -> Result<Monitor> {
     unsafe extern "system" fn changed(
         context: *const c_void,
         _: *const MIB_IPINTERFACE_ROW,
         _: MIB_NOTIFICATION_TYPE,
     ) {
-        let tx = unsafe { &*(context as *const SyncSender<Event>) };
-        let _ = tx.try_send(Event::NetworkChanged);
+        let notifier = unsafe { &*(context as *const Signal) };
+        notifier.notify();
     }
     unsafe extern "system" fn address_changed(
         context: *const c_void,
         _: *const MIB_UNICASTIPADDRESS_ROW,
         _: MIB_NOTIFICATION_TYPE,
     ) {
-        let tx = unsafe { &*(context as *const SyncSender<Event>) };
-        let _ = tx.try_send(Event::NetworkChanged);
+        let notifier = unsafe { &*(context as *const Signal) };
+        notifier.notify();
     }
     unsafe extern "system" fn route_changed(
         context: *const c_void,
         _: *const MIB_IPFORWARD_ROW2,
         _: MIB_NOTIFICATION_TYPE,
     ) {
-        let tx = unsafe { &*(context as *const SyncSender<Event>) };
-        let _ = tx.try_send(Event::NetworkChanged);
+        let notifier = unsafe { &*(context as *const Signal) };
+        notifier.notify();
     }
     let stop = Arc::new(Cancel::new()?);
     let done = stop.clone();
-    let events = Box::new(events);
     struct Notifications(Vec<usize>);
     impl Drop for Notifications {
         fn drop(&mut self) {
@@ -437,7 +436,7 @@ pub fn monitor(events: SyncSender<Event>) -> Result<Monitor> {
         }
     }
     let mut notifications = Notifications(Vec::new());
-    let context = (&*events as *const SyncSender<Event>).cast();
+    let context = Arc::as_ptr(&events).cast();
     let mut notification = ptr::null_mut();
     ensure!(
         unsafe {
@@ -911,7 +910,7 @@ impl PipeListener {
     }
 }
 
-static STOP: OnceLock<SyncSender<Event>> = OnceLock::new();
+static STOP: OnceLock<Arc<Signal>> = OnceLock::new();
 static POWER: OnceLock<Arc<PowerNotifier>> = OnceLock::new();
 static SCM: OnceLock<usize> = OnceLock::new();
 fn report_service(state: u32, code: u32) {
@@ -938,7 +937,7 @@ fn report_service(state: u32, code: u32) {
 pub fn service_ready() {
     report_service(SERVICE_RUNNING, 0);
 }
-pub fn register_stop_sender(tx: SyncSender<Event>) {
+pub fn register_stop_notifier(tx: Arc<Signal>) {
     let _ = STOP.set(tx);
     unsafe {
         windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(console_stop), 1);
@@ -949,7 +948,7 @@ pub fn register_power_notifier(power: Arc<PowerNotifier>) {
 }
 unsafe extern "system" fn console_stop(_: u32) -> i32 {
     if let Some(tx) = STOP.get() {
-        let _ = tx.try_send(Event::Stop);
+        tx.notify();
     }
     1
 }
@@ -962,7 +961,7 @@ unsafe extern "system" fn control(
     if code == SERVICE_CONTROL_STOP || code == SERVICE_CONTROL_SHUTDOWN {
         report_service(SERVICE_STOP_PENDING, 0);
         if let Some(tx) = STOP.get() {
-            let _ = tx.try_send(Event::Stop);
+            tx.notify();
         }
     }
     if code == SERVICE_CONTROL_POWEREVENT {

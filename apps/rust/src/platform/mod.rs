@@ -1,6 +1,12 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, mpsc::SyncSender};
+use std::{
+    sync::{
+        Arc,
+        mpsc::{SyncSender, TrySendError},
+    },
+    time::Duration,
+};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -73,6 +79,24 @@ pub struct Session {
     stop: Arc<Cancel>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
+
+/// Joined workers must deliver results reliably without blocking cancellation.
+pub fn deliver(
+    events: &SyncSender<crate::engine::Event>,
+    mut event: crate::engine::Event,
+    stop: &Cancel,
+) -> bool {
+    loop {
+        match events.try_send(event) {
+            Ok(()) => return true,
+            Err(TrySendError::Disconnected(_)) => return false,
+            Err(TrySendError::Full(pending)) => event = pending,
+        }
+        if !cancellable_wait(stop, Duration::from_millis(10)) {
+            return false;
+        }
+    }
+}
 impl Session {
     pub fn open(
         adapter: &Adapter,
@@ -89,15 +113,21 @@ impl Session {
                 loop {
                     match reader.receive(&done) {
                         Ok(Some(bytes)) => {
-                            let _ =
-                                events.try_send(crate::engine::Event::Packet(generation, bytes));
+                            if !deliver(
+                                &events,
+                                crate::engine::Event::Packet(generation, bytes),
+                                &done,
+                            ) {
+                                break;
+                            }
                         }
                         Ok(None) => break,
                         Err(e) => {
-                            let _ = events.try_send(crate::engine::Event::CaptureError(
-                                generation,
-                                e.to_string(),
-                            ));
+                            deliver(
+                                &events,
+                                crate::engine::Event::CaptureError(generation, e.to_string()),
+                                &done,
+                            );
                             break;
                         }
                     }
@@ -129,5 +159,58 @@ impl Drop for Monitor {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+    use crate::engine::Event;
+    use std::sync::mpsc;
+
+    #[test]
+    fn full_queue_preserves_one_shot_results() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        tx.send(Event::NetworkChanged).unwrap();
+        let stop = Arc::new(Cancel::new().unwrap());
+        let worker_stop = stop.clone();
+        let (ready, started) = mpsc::channel();
+        let (finished, done) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            ready.send(()).unwrap();
+            finished
+                .send(deliver(
+                    &tx,
+                    Event::CaptureError(7, "driver reset".into()),
+                    &worker_stop,
+                ))
+                .unwrap();
+        });
+        started.recv().unwrap();
+        assert!(done.recv_timeout(Duration::from_millis(30)).is_err());
+        assert!(matches!(rx.recv().unwrap(), Event::NetworkChanged));
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Event::CaptureError(7, _)
+        ));
+        assert!(done.recv_timeout(Duration::from_secs(2)).unwrap());
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn full_queue_delivery_remains_cancellable_for_joined_workers() {
+        let (tx, _rx) = mpsc::sync_channel(1);
+        tx.send(Event::NetworkChanged).unwrap();
+        let stop = Arc::new(Cancel::new().unwrap());
+        let worker_stop = stop.clone();
+        let (finished, done) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            finished
+                .send(deliver(&tx, Event::Connectivity(8, true), &worker_stop))
+                .unwrap();
+        });
+        stop.set();
+        assert!(!done.recv_timeout(Duration::from_secs(2)).unwrap());
+        thread.join().unwrap();
     }
 }
