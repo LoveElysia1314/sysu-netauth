@@ -12,7 +12,7 @@ from scripts.package_windows import find_compiler
 ROOT = Path(__file__).resolve().parent.parent
 
 
-@unittest.skipUnless(os.name == "nt", "requires Windows, MSVC and Inno Setup 6")
+@unittest.skipUnless(os.name == "nt", "requires Windows, .NET Framework 4 and Inno Setup 6")
 class InstallerServiceTests(unittest.TestCase):
     def command(self, *args, **kwargs):
         return subprocess.run(args, check=True, capture_output=True, timeout=60, **kwargs)
@@ -66,9 +66,14 @@ class InstallerServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="netauth service checks ") as location:
             directory = Path(location).resolve()
             binary = directory / "fixture.exe"
-            self.command("cl.exe", "/nologo", "/W4", "/WX", "/MT",
-                         str(ROOT / "tests/fixtures/installer_service.c"),
-                         f"/Fe{binary}", f"/Fo{directory / 'fixture.obj'}", "/link", "advapi32.lib")
+            # Use Windows' .NET Framework compiler directly, without an MSVC
+            # developer shell, a .NET SDK install, or a NuGet restore.
+            framework = Path(os.environ["SystemRoot"]) / "Microsoft.NET/Framework/v4.0.30319"
+            compiler = framework / "csc.exe"
+            self.assertTrue(compiler.is_file(), f".NET Framework 4 compiler missing: {compiler}")
+            self.command(str(compiler), "/nologo", "/warn:4", "/warnaserror+", "/target:exe",
+                         f"/reference:{framework / 'System.ServiceProcess.dll'}", f"/out:{binary}",
+                         str(ROOT / "tests/fixtures/installer_service.cs"))
             for hung in (False, True):
                 with self.subTest(hung=hung):
                     name = f"NetAuthInstallerTest{os.getpid()}{int(hung)}"
