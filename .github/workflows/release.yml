@@ -58,6 +58,8 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-build.txt
       - run: python -m pip install -r requirements-build.txt
+      - if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
       - run: python -m unittest discover -s tests -v
   rust:
     needs: version
@@ -158,10 +160,20 @@ jobs:
           path: dist/linux-build
       - uses: actions/download-artifact@v4
         with:
+          pattern: sysu-netauth-Rust-macOS-*
+          path: dist/macos-build
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
           name: sysu-netauth-release-metadata
           path: build
       - name: Prepare and verify the complete release set
-        run: python3 scripts/prepare_release_assets.py --metadata build/release-version.json --linux-input dist/linux-build/sysu-netauth-linux-x64.tar.gz --output-dir dist/release-assets
+        run: >-
+          python3 scripts/prepare_release_assets.py --metadata build/release-version.json
+          --linux-input dist/linux-build/sysu-netauth-linux-x64.tar.gz
+          --macos-arm64-input dist/macos-build/sysu-netauth-macos-arm64.tar.gz
+          --macos-x64-input dist/macos-build/sysu-netauth-macos-x64.tar.gz
+          --output-dir dist/release-assets
       - name: Upload packages or create draft release
         env:
           GH_TOKEN: ${{ github.token }}
