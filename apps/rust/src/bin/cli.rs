@@ -17,7 +17,7 @@ use std::{
 struct Args {
     #[arg(long, global = true)]
     json: bool,
-    /// Override data location (Linux also isolates the IPC endpoint).
+    /// Override data location (Unix also isolates the IPC endpoint).
     #[arg(long, global = true)]
     data_dir: Option<PathBuf>,
     #[command(subcommand)]

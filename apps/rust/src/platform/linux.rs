@@ -1,24 +1,16 @@
+use super::unix::{fd, wait_readable};
 use super::{Adapter, Monitor, virtual_mac, virtual_name};
 use crate::{engine::Signal, protocol::MAX_FRAME};
 use anyhow::{Context, Result, ensure};
 use std::{
-    fs,
-    io::{self, Read},
-    mem,
+    fs, io, mem,
     net::Ipv4Addr,
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    os::fd::{AsRawFd, OwnedFd},
     path::Path,
     ptr,
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
-
-fn fd(raw: i32) -> Result<OwnedFd> {
-    if raw < 0 {
-        return Err(io::Error::last_os_error().into());
-    }
-    Ok(unsafe { OwnedFd::from_raw_fd(raw) })
-}
 
 pub struct Cancel(OwnedFd);
 impl Cancel {
@@ -33,40 +25,12 @@ impl Cancel {
             libc::write(self.0.as_raw_fd(), bytes.as_ptr().cast(), 8);
         }
     }
+    pub(super) fn raw(&self) -> i32 {
+        self.0.as_raw_fd()
+    }
 }
 fn wait(raw: i32, stop: &Cancel) -> Result<bool> {
-    let mut fds = [
-        libc::pollfd {
-            fd: raw,
-            events: libc::POLLIN,
-            revents: 0,
-        },
-        libc::pollfd {
-            fd: stop.0.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        },
-    ];
-    loop {
-        let n = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
-        if n < 0 {
-            let e = io::Error::last_os_error();
-            if e.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(e.into());
-        }
-        if fds[1].revents != 0 {
-            return Ok(false);
-        }
-        ensure!(
-            fds[0].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) == 0,
-            "network handle closed"
-        );
-        if fds[0].revents & libc::POLLIN != 0 {
-            return Ok(true);
-        }
-    }
+    wait_readable(raw, stop, None)
 }
 pub struct Capture(OwnedFd);
 impl Capture {
@@ -242,7 +206,7 @@ pub fn adapters() -> Result<Vec<Adapter>> {
     Ok(result)
 }
 
-pub fn monitor(events: Arc<Signal>) -> Result<Monitor> {
+pub fn monitor(events: Arc<Signal>, _power: Arc<crate::engine::PowerNotifier>) -> Result<Monitor> {
     let socket = fd(unsafe {
         libc::socket(
             libc::AF_NETLINK,
@@ -289,125 +253,6 @@ pub fn monitor(events: Arc<Signal>) -> Result<Monitor> {
     })
 }
 
-pub fn https_get(url: &str, hosts: &[&str], limit: usize) -> Result<Vec<u8>> {
-    ensure!(
-        crate::update::safe_url(url, hosts),
-        "untrusted download URL"
-    );
-    let config = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(8)))
-        .max_redirects(0)
-        .build();
-    let agent = ureq::Agent::new_with_config(config);
-    let response = agent
-        .get(url)
-        .header(
-            "User-Agent",
-            concat!("SYSUNetAuth/", env!("NETAUTH_APP_VERSION")),
-        )
-        .call()?;
-    ensure!(
-        response.status().as_u16() == 200,
-        "HTTP {}",
-        response.status()
-    );
-    let mut bytes = Vec::new();
-    response
-        .into_body()
-        .into_reader()
-        .take(limit as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    ensure!(bytes.len() <= limit, "download exceeds size limit");
-    Ok(bytes)
-}
-
-fn checksum(bytes: &[u8]) -> u16 {
-    let sum = bytes.chunks(2).fold(0u32, |sum, c| {
-        sum + u16::from_be_bytes([c[0], *c.get(1).unwrap_or(&0)]) as u32
-    });
-    let sum = (sum & 0xffff) + (sum >> 16);
-    !((sum & 0xffff) + (sum >> 16)) as u16
-}
-pub fn ping(target: Ipv4Addr, stop: &Cancel) -> bool {
-    let Ok(socket) = fd(unsafe {
-        libc::socket(
-            libc::AF_INET,
-            libc::SOCK_RAW | libc::SOCK_CLOEXEC,
-            libc::IPPROTO_ICMP,
-        )
-    }) else {
-        return false;
-    };
-    let mut addr: libc::sockaddr_in = unsafe { mem::zeroed() };
-    addr.sin_family = libc::AF_INET as u16;
-    addr.sin_addr.s_addr = u32::from_ne_bytes(target.octets());
-    let id = (std::process::id() as u16).to_be_bytes();
-    let mut packet = [8, 0, 0, 0, id[0], id[1], 0, 1];
-    let check = checksum(&packet);
-    packet[2..4].copy_from_slice(&check.to_be_bytes());
-    if unsafe {
-        libc::sendto(
-            socket.as_raw_fd(),
-            packet.as_ptr().cast(),
-            packet.len(),
-            0,
-            (&addr as *const libc::sockaddr_in).cast(),
-            mem::size_of_val(&addr) as u32,
-        )
-    } < 0
-    {
-        return false;
-    }
-    let until = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < until {
-        let mut fds = [
-            libc::pollfd {
-                fd: socket.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: stop.0.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
-        if unsafe {
-            libc::poll(
-                fds.as_mut_ptr(),
-                2,
-                until
-                    .saturating_duration_since(Instant::now())
-                    .as_millis()
-                    .min(3000) as i32,
-            )
-        } <= 0
-            || fds[1].revents != 0
-        {
-            return false;
-        }
-        let mut bytes = [0; 2048];
-        let n = unsafe {
-            libc::recv(
-                socket.as_raw_fd(),
-                bytes.as_mut_ptr().cast(),
-                bytes.len(),
-                0,
-            )
-        };
-        if n >= 28 {
-            let iplen = (bytes[0] & 15) as usize * 4;
-            if iplen + 8 <= n as usize
-                && bytes[iplen] == 0
-                && bytes[iplen + 4..iplen + 6] == id
-                && bytes[12..16] == target.octets()
-            {
-                return true;
-            }
-        }
-    }
-    false
-}
 pub fn cancellable_wait(stop: &Cancel, duration: Duration) -> bool {
     let mut p = libc::pollfd {
         fd: stop.0.as_raw_fd(),
@@ -415,49 +260,4 @@ pub fn cancellable_wait(stop: &Cancel, duration: Duration) -> bool {
         revents: 0,
     };
     unsafe { libc::poll(&mut p, 1, duration.as_millis().min(i32::MAX as u128) as i32) == 0 }
-}
-
-pub fn signal_thread(events: Arc<Signal>) -> Result<()> {
-    let mut set: libc::sigset_t = unsafe { mem::zeroed() };
-    unsafe {
-        libc::sigemptyset(&mut set);
-        libc::sigaddset(&mut set, libc::SIGINT);
-        libc::sigaddset(&mut set, libc::SIGTERM);
-    }
-    ensure!(
-        unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &set, ptr::null_mut()) } == 0,
-        "block termination signals"
-    );
-    let socket = fd(unsafe { libc::signalfd(-1, &set, libc::SFD_CLOEXEC) })?;
-    std::thread::Builder::new()
-        .name("shutdown-signal".into())
-        .spawn(move || {
-            let mut info = [0u8; 128];
-            unsafe {
-                libc::read(socket.as_raw_fd(), info.as_mut_ptr().cast(), info.len());
-            }
-            events.notify();
-        })?;
-    Ok(())
-}
-pub fn is_admin() -> bool {
-    unsafe { libc::geteuid() == 0 }
-}
-
-pub fn instance_lock(paths: &crate::config::Paths) -> Result<fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let parent = paths.endpoint.parent().context("lock parent")?;
-    crate::config::private_dir(parent)?;
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .open(parent.join("instance.lock"))?;
-    ensure!(
-        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
-        "another service or direct authentication process is running"
-    );
-    Ok(file)
 }

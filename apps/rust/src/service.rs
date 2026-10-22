@@ -30,7 +30,7 @@ pub fn run(paths: Paths) -> Result<()> {
     let _server = ipc::start(engine.paths(), tx)?;
     // Native notifications are the fast path; periodic reconciliation keeps
     // startup/recovery working if registration is temporarily unavailable.
-    let _monitor = match platform::monitor(engine.network_notifier()) {
+    let _monitor = match platform::monitor(engine.network_notifier(), engine.power_notifier()) {
         Ok(monitor) => Some(monitor),
         Err(e) => {
             crate::diagnostics::record(

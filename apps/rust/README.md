@@ -1,6 +1,6 @@
 # SYSU NetAuth Rust 版
 
-支持 Windows 10/11 x64（GUI、CLI、后台服务）和 Linux x64（CLI、systemd 服务）。
+支持 Windows 10/11 x64（GUI、CLI、后台服务）、Linux x64（CLI、systemd）和 macOS 11+（CLI、launchd，实验性）。
 
 ## Windows 安装
 
@@ -81,9 +81,15 @@ sudo sysu_netauth authenticate
 
 停止并禁用服务：`sudo systemctl disable --now sysu-netauth`。
 
+### macOS 安装
+
+提供 Apple Silicon（`macos_arm64`）与 Intel（`macos_x64`）程序包，需有线以太网，无需 Npcap。安装、配置与卸载见 [macOS 文档](docs/MACOS.md)。
+
+在 macOS 上构建：`sh apps/rust/scripts/build-macos.sh`。输出位于 `apps/rust/dist/`。
+
 ## CLI
 
-Windows 使用管理员终端；Linux 使用 `sudo`。
+Windows 使用管理员终端；Linux 与 macOS 的服务操作使用 `sudo`。
 
 ```sh
 sysu_netauth interfaces

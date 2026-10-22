@@ -25,6 +25,8 @@ Each Windows variant also provides a `SYSUNetAuth_<variant>_Portable_v<version>.
 
 Linux x64: `SYSUNetAuth_Rust_linux_x64_v<version>.tar.gz`, with `SHA256SUMS-rust-linux-x64.txt`. The archive includes the CLI, service, systemd unit and installation script.
 
+macOS: `SYSUNetAuth_Rust_macos_arm64_v<version>.tar.gz` (Apple Silicon) and `SYSUNetAuth_Rust_macos_x64_v<version>.tar.gz` (Intel), with `SHA256SUMS-rust-macos-<arch>.txt`. Both include the CLI, daemon and launchd installation/removal scripts. macOS support is experimental.
+
 ## Local packaging
 
 Use a clean release tag and install Inno Setup 6. From the repository root:

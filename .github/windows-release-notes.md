@@ -8,4 +8,4 @@ Windows requires [Npcap](https://npcap.com/#download). Portable ZIPs contain app
 
 **Linux x64**: the Rust `.tar.gz` includes CLI, service, systemd unit and installation script.
 
-Install one version at a time. Before switching, exit the GUI, stop the `SYSUNetAuth` service and back up `%ProgramData%\SYSUNetAuth`.
+**macOS Apple Silicon / Intel (experimental)**: the Rust `.tar.gz` includes CLI, daemon and launchd installation/removal scripts.

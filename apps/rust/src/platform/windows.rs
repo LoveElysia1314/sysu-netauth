@@ -398,7 +398,7 @@ pub fn adapters() -> Result<Vec<Adapter>> {
     }
     bail!("adapter list kept changing")
 }
-pub fn monitor(events: Arc<Signal>) -> Result<Monitor> {
+pub fn monitor(events: Arc<Signal>, _power: Arc<PowerNotifier>) -> Result<Monitor> {
     unsafe extern "system" fn changed(
         context: *const c_void,
         _: *const MIB_IPINTERFACE_ROW,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect Linux binaries and verify the complete release asset set."""
+"""Collect Unix binaries and verify the complete release asset set."""
 
 import argparse
 import hashlib
@@ -30,28 +30,41 @@ def expected_assets(info: dict) -> dict[str, list[str]]:
     groups["SHA256SUMS-rust-linux-x64.txt"] = [
         f"SYSUNetAuth_Rust_linux_x64_v{info['version']}.tar.gz"
     ]
+    for arch in ("arm64", "x64"):
+        groups[f"SHA256SUMS-rust-macos-{arch}.txt"] = [
+            f"SYSUNetAuth_Rust_macos_{arch}_v{info['version']}.tar.gz"
+        ]
     return groups
 
 
-def prepare(metadata: Path, linux_input: Path, output: Path) -> list[Path]:
+def prepare(metadata: Path, linux_input: Path, output: Path, *, macos_inputs: dict[str, Path]) -> list[Path]:
     info = json.loads(metadata.read_text(encoding="utf-8"))
     groups = expected_assets(info)
-    with tarfile.open(linux_input, "r:gz") as archive:
-        for name in ("sysu_netauth", "sysu_netauth_service", "sysu-netauth.service", "install-linux.sh", "release-version.json"):
-            member = archive.getmember(f"sysu-netauth-linux-x64/{name}")
-            if not member.isfile():
-                raise ValueError(f"Linux archive requires a regular file: {name}")
-        with archive.extractfile("sysu-netauth-linux-x64/release-version.json") as stream:
-            if json.load(stream) != info:
-                raise ValueError("Linux artifact version/commit does not match this release")
-
+    if set(macos_inputs) != {"arm64", "x64"}:
+        raise ValueError("macOS release requires both arm64 and x64 archives")
+    unix_inputs = {"linux-x64": linux_input} | {f"macos-{arch}": path for arch, path in macos_inputs.items()}
+    for platform, path in unix_inputs.items():
+        required = ("sysu_netauth", "sysu_netauth_service", "release-version.json")
+        if platform == "linux-x64":
+            required += ("sysu-netauth.service", "install-linux.sh")
+        else:
+            required += ("io.github.peterrobot.sysu-netauth.plist", "install-macos.sh", "uninstall-macos.sh", "launchd-common.sh")
+        with tarfile.open(path, "r:gz") as archive:
+            prefix = f"sysu-netauth-{platform}"
+            for name in required:
+                member = archive.getmember(f"{prefix}/{name}")
+                if not member.isfile() or member.size == 0:
+                    raise ValueError(f"{platform} archive requires a nonempty regular file: {name}")
+            with archive.extractfile(f"{prefix}/release-version.json") as stream:
+                if json.load(stream) != info:
+                    raise ValueError(f"{platform} artifact version/commit does not match this release")
     output.mkdir(parents=True, exist_ok=True)
-    linux_name = groups["SHA256SUMS-rust-linux-x64.txt"][0]
-    linux_archive = output / linux_name
-    shutil.copyfile(linux_input, linux_archive)
-    (output / "SHA256SUMS-rust-linux-x64.txt").write_text(
-        f"{digest(linux_archive)}  {linux_name}\n", encoding="utf-8"
-    )
+    for platform, path in unix_inputs.items():
+        checksum = f"SHA256SUMS-rust-{platform}.txt"
+        name = groups[checksum][0]
+        destination = output / name
+        shutil.copyfile(path, destination)
+        (output / checksum).write_text(f"{digest(destination)}  {name}\n", encoding="utf-8")
 
     expected = {name for checksum, names in groups.items() for name in [checksum, *names]}
     actual = {path.name for path in output.iterdir()}
@@ -71,9 +84,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--metadata", type=Path, required=True)
     parser.add_argument("--linux-input", type=Path, required=True)
+    parser.add_argument("--macos-arm64-input", type=Path, required=True)
+    parser.add_argument("--macos-x64-input", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
-    for path in prepare(args.metadata, args.linux_input, args.output_dir):
+    for path in prepare(args.metadata, args.linux_input, args.output_dir,
+                        macos_inputs={"arm64": args.macos_arm64_input, "x64": args.macos_x64_input}):
         print(path.name)
 
 
