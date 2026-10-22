@@ -47,6 +47,7 @@ ArchitecturesInstallIn64BitMode=x64os
 ArchitecturesAllowed=x64compatible
 WizardStyle=modern
 SetupLogging=yes
+UninstallLogging=yes
 SetupIconFile=..\sysu_netauth\assets\icon-ethernet.ico
 ChangesEnvironment=yes
 UninstallDisplayIcon={app}\{#MyAppIconName}
@@ -90,6 +91,10 @@ Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: no
 const
   EnvironmentKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
   NpcapUrlConst = '{#NpcapUrl}';
+  UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\7E9B2C3A-1D4F-4E8A-9B6C-2F3D0E5A7C1B_is1';
+
+#include "../../../scripts/windows/process.iss"
+#include "../../../scripts/windows/service.iss"
 
 var
   ExistingInstallDirExists: Boolean;
@@ -97,58 +102,21 @@ var
 
 // ── 初始化：检测旧版本状态、运行实例 ──
 
-// 通过 tasklist 检测程序是否正在运行（跨会话安全）
-function IsAppRunning: Boolean;
-var
-  ResultCode: Integer;
-begin
-  Result :=
-    Exec(
-      'cmd.exe',
-      '/c tasklist /fi "imagename eq {#MyAppExeName}" /nh | findstr /i "{#MyAppExeName}"',
-      '',
-      SW_HIDE,
-      ewWaitUntilTerminated,
-      ResultCode
-    ) and (ResultCode = 0);
-end;
-
-procedure StopManagedProcesses;
-var
-  ResultCode: Integer;
-  MaxWait: Integer;
-begin
-  // 原地升级前先停止本项目托管的运行实例；配置仍保留在 ProgramData。
-  Exec('sc.exe', 'stop "{#MyServiceName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  // 轮询等待服务进程优雅退出，最多等 10 秒；超时后 force-kill
-  MaxWait := 10;
-  while MaxWait > 0 do
-  begin
-    Sleep(1000);
-    if Exec('cmd.exe', '/c tasklist /fi "imagename eq {#MyAppServiceExeName}" /nh | findstr /i "{#MyAppServiceExeName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    begin
-      if ResultCode <> 0 then
-        Break; // 进程已优雅退出
-    end;
-    Dec(MaxWait);
-  end;
-
-  Exec('taskkill', '/f /im "{#MyAppServiceExeName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-
-  if IsAppRunning then
-  begin
-    Exec('taskkill', '/f /im "{#MyAppExeName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    Log('已关闭运行中的配置面板');
-    Sleep(500);
-  end;
-end;
-
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   // 在 Inno 检查占用文件之前先停止服务和已知 GUI；随后 Restart Manager
   // 再扫描 [Files] 的实际目标，覆盖跨会话或短暂占用场景。
-  StopManagedProcesses;
-  Result := '';
+  if StopManagedApp(Result) then Result := '';
+end;
+
+procedure DeinitializeSetup;
+begin
+  RestoreManagedStart;
+end;
+
+procedure DeinitializeUninstall;
+begin
+  RestoreManagedStart;
 end;
 
 function InitializeSetup: Boolean;
@@ -165,16 +133,18 @@ begin
     Exit;
   end;
 
-  ExistingInstallDirExists := RegQueryStringValue(
-    HKLM,
-    'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#MyAppId}_is1',
-    'InstallLocation',
-    ExistingInstallDir
-  ) and (ExistingInstallDir <> '');
+  if not RegQueryStringValue(HKLM64, UninstallKey, 'InstallLocation', ExistingInstallDir) then
+    RegQueryStringValue(HKLM32, UninstallKey, 'InstallLocation', ExistingInstallDir);
+  ExistingInstallDirExists := DirExists(ExistingInstallDir);
   if ExistingInstallDirExists then
     Log('检测到现有安装目录，将锁定安装路径: ' + ExistingInstallDir);
 
   Result := True;
+end;
+
+procedure InitializeWizard;
+begin
+  if ExistingInstallDirExists then WizardForm.DirEdit.Text := ExistingInstallDir;
 end;
 
 // ── 升级安装时锁定安装目录 ──
@@ -255,54 +225,26 @@ end;
 
 // ── 安装后处理 ──
 
-procedure StopServiceIfExists;
-var
-  ResultCode: Integer;
-  MaxWait: Integer;
-begin
-  Exec('sc.exe', 'stop "{#MyServiceName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  // 轮询等待服务进程真正退出，最多等 15 秒
-  MaxWait := 15;
-  while MaxWait > 0 do
-  begin
-    Sleep(1000);
-    if Exec('cmd.exe', '/c tasklist /fi "imagename eq {#MyAppServiceExeName}" /nh | findstr /i "{#MyAppServiceExeName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    begin
-      if ResultCode <> 0 then
-        Exit; // findstr 未找到 → 进程已退出
-    end;
-    Dec(MaxWait);
-  end;
-  // 超时未退出 → 强制终止，防止 {app} 文件被占用
-  Exec('taskkill', '/f /im "{#MyAppServiceExeName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(500);
-end;
-
-procedure RemoveServiceIfExists;
-var
-  ResultCode: Integer;
-begin
-  StopServiceIfExists;
-  Exec('sc.exe', 'delete "{#MyServiceName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-end;
-
 procedure InstallAuthService;
 var
   ServiceExePath: string;
   ResultCode: Integer;
 begin
   ServiceExePath := ExpandConstant('{app}\{#MyAppServiceExeName}');
-  RemoveServiceIfExists;
-  if Exec('sc.exe', 'create "{#MyServiceName}" binPath= "' + ServiceExePath + '" start= auto depend= npcap DisplayName= "{#MyAppName}"',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then
-    Log('Windows 服务已安装: {#MyServiceName}')
-  else
-    Log('Windows 服务安装失败（错误码: ' + IntToStr(ResultCode) + '）');
-  Exec('sc.exe', 'description "{#MyServiceName}" "SYSU wired campus network 802.1X authentication service"',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Exec('sc.exe', 'failure "{#MyServiceName}" reset= 86400 actions= restart/60000/none/0/none/0',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  if Exec('sc.exe', 'start "{#MyServiceName}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then
+  // Update in place; deleting/recreating a service races SCM's pending deletion.
+  if not RunSetupCommand(ExpandConstant('{sys}\sc.exe'), 'create "{#MyServiceName}" binPath= "\"' + ServiceExePath + '\"" start= auto depend= npcap DisplayName= "{#MyAppName}"',
+    15, ResultCode) then RaiseException('Windows 服务注册超时：' + IntToStr(ResultCode));
+  if ResultCode = 1073 then begin
+    if not RunSetupCommand(ExpandConstant('{sys}\sc.exe'), 'config "{#MyServiceName}" binPath= "\"' + ServiceExePath + '\"" start= auto depend= npcap',
+      15, ResultCode) then RaiseException('Windows 服务更新超时：' + IntToStr(ResultCode));
+  end;
+  if ResultCode <> 0 then RaiseException('Windows 服务注册失败：' + IntToStr(ResultCode));
+  ManagedStartChanged := False;
+  RunSetupCommand(ExpandConstant('{sys}\sc.exe'), 'description "{#MyServiceName}" "SYSU wired campus network 802.1X authentication service"',
+    15, ResultCode);
+  RunSetupCommand(ExpandConstant('{sys}\sc.exe'), 'failure "{#MyServiceName}" reset= 86400 actions= restart/60000/none/0/none/0',
+    15, ResultCode);
+  if RunSetupCommand(ExpandConstant('{sys}\sc.exe'), 'start "{#MyServiceName}"', 30, ResultCode) and (ResultCode = 0) then
     Log('Windows 服务已启动')
   else
     Log('Windows 服务启动失败或已在运行（错误码: ' + IntToStr(ResultCode) + '）');
@@ -326,30 +268,21 @@ var
 begin
   DataDir := ExpandConstant('{commonappdata}\{#MyAppId}');
   // 移除旧版本遗留的 Users 权限，仅保留 SYSTEM 与管理员完全控制。
-  Exec(
-    'icacls.exe',
-    '"' + DataDir + '" /inheritance:r /remove:g *S-1-5-32-545',
-    '',
-    SW_HIDE,
-    ewWaitUntilTerminated,
-    ResultCode
-  );
-  Exec(
-    'icacls.exe',
-    '"' + DataDir + '" /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F',
-    '',
-    SW_HIDE,
-    ewWaitUntilTerminated,
-    ResultCode
-  );
+  RunSetupCommand(ExpandConstant('{sys}\icacls.exe'),
+    '"' + DataDir + '" /inheritance:r /remove:g *S-1-5-32-545 /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F',
+    30, ResultCode);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   NpcapMsg: string;
+  Code: Integer;
 begin
   if CurStep = ssPostInstall then
   begin
+    // Switching from Rust keeps the same logon task and removes its old GUI.
+    DeleteFile(ExpandConstant('{app}\sysu_netauth_gui.exe'));
+    RunSetupCommand(ExpandConstant('{sys}\schtasks.exe'), '/Change /TN "SYSUNetAuth GUI" /TR "\"' + ExpandConstant('{app}\{#MyAppExeName}') + '\" --startup"', 15, Code);
     AddToPath(ExpandConstant('{app}'));
 
     HardenDataDirectory;
@@ -357,7 +290,7 @@ begin
     InstallAuthService;
 
     // Npcap 未安装 → 弹窗提示用户
-    if not IsNpcapInstalled then
+    if (not WizardSilent) and (not IsNpcapInstalled) then
     begin
       NpcapMsg :=
         '检测到系统中未安装 Npcap 网络驱动。' #13#13
@@ -379,33 +312,42 @@ var
   appDataPath: string;
   userDataPath: string;
   legacyUserDataPath: string;
+  Error: string;
   choice: Integer;
 begin
   case CurUninstallStep of
+    usUninstall:
+      begin
+        // Stop and verify before Inno attempts to remove any executable or DLL.
+        if not StopManagedApp(Error) or not RemoveManagedService(Error) then begin
+          SuppressibleMsgBox('无法停止或移除认证服务，卸载已取消。' #13#10 + Error,
+            mbCriticalError, MB_OK, IDOK);
+          Abort;
+        end;
+      end;
     usPostUninstall:
       begin
         // 清理系统 PATH
         RemoveFromPath(ExpandConstant('{app}'));
 
-        // 清理 Windows 认证服务
-        RemoveServiceIfExists;
+        // 清理旧命令
         ClearPendingCommands;
 
         // 清理可能的开机自启残留
         RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', '{#MyAppId}');
         DeleteFile(ExpandConstant('{userstartup}\{#MyAppName}.lnk'));
-        Exec('schtasks.exe', '/Delete /TN "{#MyAppId} GUI" /F', '', SW_HIDE, ewWaitUntilTerminated, choice);
+        RunSetupCommand(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "{#MyAppId} GUI" /F', 15, choice);
 
         // 同时兼容旧版 config.json.tmp 与新版 config.json.<随机值>.tmp。
-        Exec('cmd.exe', '/c del /q "' + ExpandConstant('{commonappdata}\{#MyAppId}') + '\*.json.tmp" "' + ExpandConstant('{commonappdata}\{#MyAppId}') + '\*.json.*.tmp" 2>nul', '', SW_HIDE, ewWaitUntilTerminated, choice);
-        Exec('cmd.exe', '/c del /q "' + ExpandConstant('{userappdata}\{#MyAppId}') + '\*.json.tmp" "' + ExpandConstant('{userappdata}\{#MyAppId}') + '\*.json.*.tmp" 2>nul', '', SW_HIDE, ewWaitUntilTerminated, choice);
-        Exec('cmd.exe', '/c del /q "' + ExpandConstant('{userappdata}\CampusNetAuth') + '\*.json.tmp" "' + ExpandConstant('{userappdata}\CampusNetAuth') + '\*.json.*.tmp" 2>nul', '', SW_HIDE, ewWaitUntilTerminated, choice);
+        RunSetupCommand(ExpandConstant('{sys}\cmd.exe'), '/d /c del /q "' + ExpandConstant('{commonappdata}\{#MyAppId}') + '\*.json.tmp" "' + ExpandConstant('{commonappdata}\{#MyAppId}') + '\*.json.*.tmp" 2>nul', 10, choice);
+        RunSetupCommand(ExpandConstant('{sys}\cmd.exe'), '/d /c del /q "' + ExpandConstant('{userappdata}\{#MyAppId}') + '\*.json.tmp" "' + ExpandConstant('{userappdata}\{#MyAppId}') + '\*.json.*.tmp" 2>nul', 10, choice);
+        RunSetupCommand(ExpandConstant('{sys}\cmd.exe'), '/d /c del /q "' + ExpandConstant('{userappdata}\CampusNetAuth') + '\*.json.tmp" "' + ExpandConstant('{userappdata}\CampusNetAuth') + '\*.json.*.tmp" 2>nul', 10, choice);
 
         // 询问删除用户配置数据
         appDataPath := ExpandConstant('{userappdata}');
         userDataPath := appDataPath + '\{#MyAppId}';
         legacyUserDataPath := appDataPath + '\CampusNetAuth';
-        if DirExists(userDataPath) or DirExists(legacyUserDataPath) then
+        if (not UninstallSilent) and (DirExists(userDataPath) or DirExists(legacyUserDataPath)) then
         begin
           choice := SuppressibleMsgBox(
             '是否删除用户配置数据（NetID/密码/认证设置）？' #13#13 '路径: ' + userDataPath,
@@ -420,7 +362,7 @@ begin
         end;
 
         userDataPath := ExpandConstant('{commonappdata}\{#MyAppId}');
-        if DirExists(userDataPath) then
+        if (not UninstallSilent) and DirExists(userDataPath) then
         begin
           choice := SuppressibleMsgBox(
             '是否删除共享配置数据（NetID/密码/服务状态）？' #13#13 '路径: ' + userDataPath,
@@ -433,7 +375,7 @@ begin
         end;
 
         // 询问卸载 Npcap — 启动 Npcap 卸载向导
-        if IsNpcapInstalled then
+        if (not UninstallSilent) and IsNpcapInstalled then
         begin
           choice := SuppressibleMsgBox(
             '是否同时卸载 Npcap 网络驱动？' #13#13

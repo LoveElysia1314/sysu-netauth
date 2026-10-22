@@ -36,6 +36,7 @@ Compression=lzma2/max
 SolidCompression=yes
 SetupIconFile=..\assets\icon-ethernet.ico
 UninstallDisplayIcon={app}\sysu_netauth_gui.exe
+UninstallLogging=yes
 WizardStyle=modern
 SetupLogging=yes
 CloseApplications=force
@@ -71,7 +72,8 @@ const
   UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#MyAppGuid}_is1';
 
 #include "npcap.iss"
-#include "process.iss"
+#include "../../../scripts/windows/process.iss"
+#include "../../../scripts/windows/service.iss"
 
 var
   ExistingInstallDir: String;
@@ -123,25 +125,19 @@ begin
   DeleteFile(ExpandConstant('{userstartup}\SYSU NetAuth.lnk'));
 end;
 
-procedure StopProcesses;
-var Code, Remaining: Integer;
-begin
-  RunSetupCommand(ExpandConstant('{sys}\sc.exe'), 'stop SYSUNetAuth', 15, Code);
-  Remaining := 10;
-  while Remaining > 0 do begin
-    if not RunSetupCommand(ExpandConstant('{sys}\cmd.exe'), '/d /c tasklist /fi "imagename eq sysu_netauth_service.exe" /nh | findstr /i sysu_netauth_service.exe', 5, Code) or (Code <> 0) then Break;
-    Sleep(1000);
-    Dec(Remaining);
-  end;
-  RunSetupCommand(ExpandConstant('{sys}\taskkill.exe'), '/f /im sysu_netauth_service.exe', 5, Code);
-  RunSetupCommand(ExpandConstant('{sys}\taskkill.exe'), '/f /im sysu_netauth_gui.exe', 5, Code);
-  RunSetupCommand(ExpandConstant('{sys}\taskkill.exe'), '/f /im sysu_netauth.exe', 5, Code);
-end;
-
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-  StopProcesses;
-  Result := '';
+  if StopManagedApp(Result) then Result := '';
+end;
+
+procedure DeinitializeSetup;
+begin
+  RestoreManagedStart;
+end;
+
+procedure DeinitializeUninstall;
+begin
+  RestoreManagedStart;
 end;
 
 procedure SetPath(Add: Boolean);
@@ -183,6 +179,7 @@ begin
     SetupStage('正在注册后台认证服务…');
     if not RunSetupCommand(ExpandConstant('{app}\sysu_netauth_service.exe'), '--install', 30, Code) or (Code <> 0) then
       RaiseException('Windows 服务注册失败或超时，请查看安装日志。错误码：' + IntToStr(Code));
+    ManagedStartChanged := False; { --install applied the saved service mode. }
     RunSetupCommand(ExpandConstant('{sys}\sc.exe'), 'failure SYSUNetAuth reset= 86400 actions= restart/60000', 15, Code);
     // The service must start without Npcap so configuration and setup remain available.
     SetupStage('正在启动后台认证服务…');
@@ -202,11 +199,14 @@ begin
 end;
 
 procedure CurUninstallStepChanged(Step: TUninstallStep);
-var Code: Integer; SharedData, UserData, LegacyData: String;
+var Code: Integer; SharedData, UserData, LegacyData, Error: String;
 begin
   if Step = usUninstall then begin
-    StopProcesses;
-    RunSetupCommand(ExpandConstant('{sys}\sc.exe'), 'delete SYSUNetAuth', 15, Code);
+    if not StopManagedApp(Error) or not RemoveManagedService(Error) then begin
+      SuppressibleMsgBox('无法停止或移除认证服务，卸载已取消。' #13#10 + Error,
+        mbCriticalError, MB_OK, IDOK);
+      Abort;
+    end;
     RunSetupCommand(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "SYSUNetAuth GUI" /F', 15, Code);
     RemoveLegacyStartup;
     ClearPendingCommands;

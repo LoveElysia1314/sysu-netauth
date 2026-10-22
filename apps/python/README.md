@@ -6,7 +6,7 @@ Windows 有线校园网认证客户端，提供 GUI、CLI 和后台服务。需�
 
 从 [Releases](https://github.com/peterrobot/sysu-netauth/releases) 下载 `Python_x64` Setup 安装程序，安装后填写 NetID 和密码。
 
-启用「服务独立运行」和自动认证后，退出 GUI 仍会保持认证。请先退出其他 802.1X 客户端。切换 Rust/Python 版本前请阅读 [版本切换说明](../../docs/ARCHITECTURE.md)。Python 版尚未包含 Rust 版的休眠恢复修复。
+启用「服务独立运行」和自动认证后，退出 GUI 仍会保持认证。请先退出其他 802.1X 客户端。版本切换与故障排查见 [Windows 安装说明](../../docs/WINDOWS.md)。Python 版尚未包含 Rust 版的休眠恢复修复。
 
 配置与日志位于 `%ProgramData%\SYSUNetAuth\`。连接异常时检查 `service.log`；服务无法启动时检查 `service_bootstrap.log`。
 
