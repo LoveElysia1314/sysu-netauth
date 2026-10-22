@@ -19,19 +19,26 @@ var
   Started: Int64;
   ChildArgs: String;
 begin
-  { Quote here: embedded quotes in ISCC /D arguments are parsed differently
-    from the Windows C runtime convention used by Python subprocess. }
-  ChildArgs := '"{#TestScript}" ';
-  Started := SetupTicks;
-  if RunSetupCommand('{#TestCommand}', ChildArgs + 'hang', 1, Code) or
-    (Code <> 1460) then RaiseException('Hung process was not timed out');
-  if SetupTicks - Started > 5000 then RaiseException('Process timeout was not bounded');
-  if not RunSetupCommand('{#TestCommand}', ChildArgs + 'stdin', 5, Code) or
-    (Code <> 0) then RaiseException('Child stdin did not close immediately');
-  if not RunSetupCommand('{#TestCommand}', ChildArgs + 'exit', 5, Code) or
-    (Code <> 7) then RaiseException('Child exit code was lost');
-  if RunSetupCommand(ExpandConstant('{tmp}\missing-netauth-process.exe'), '', 1, Code) or
-    (Code <> 2) then RaiseException('Missing executable error was lost');
-  Log('Installer process regression checks passed');
-  Result := True;
+  { Run only the process checks, then decline initialization. No installation
+    or Restart Manager scan is needed for this fixture. }
+  Result := False;
+  try
+    { Quote here: embedded quotes in ISCC /D arguments are parsed differently
+      from the Windows C runtime convention used by Python subprocess. }
+    ChildArgs := '"{#TestScript}" ';
+    Started := SetupTicks;
+    if RunSetupCommand('{#TestCommand}', ChildArgs + 'hang', 1, Code) or
+      (Code <> 1460) then RaiseException('Hung process was not timed out');
+    if SetupTicks - Started > 5000 then RaiseException('Process timeout was not bounded');
+    if not RunSetupCommand('{#TestCommand}', ChildArgs + 'stdin', 5, Code) or
+      (Code <> 0) then RaiseException('Child stdin did not close immediately');
+    if not RunSetupCommand('{#TestCommand}', ChildArgs + 'exit', 5, Code) or
+      (Code <> 7) then RaiseException('Child exit code was lost');
+    if RunSetupCommand(ExpandConstant('{tmp}\missing-netauth-process.exe'), '', 1, Code) or
+      (Code <> 2) then RaiseException('Missing executable error was lost');
+    Log('Installer process regression checks passed');
+  except
+    { Always put script failures in the CI log without opening an error dialog. }
+    Log('Installer process regression checks failed: ' + GetExceptionMessage);
+  end;
 end;
