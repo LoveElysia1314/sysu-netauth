@@ -27,7 +27,9 @@ use windows_sys::Win32::{
         WindowsAndMessaging::*,
     },
 };
+mod notifications;
 mod theme;
+use notifications::StateNotifications;
 use theme::Theme;
 
 const APP_EVENT: u32 = WM_APP + 1;
@@ -106,7 +108,7 @@ struct Window {
     tasks: mpsc::SyncSender<Task>,
     events: Arc<Mutex<Vec<UiEvent>>>,
     tray: NOTIFYICONDATAW,
-    last_notice: Option<(State, Instant)>,
+    state_notifications: StateNotifications,
     ignored_version: String,
     notified_version: String,
     startup: bool,
@@ -754,23 +756,13 @@ impl Window {
         unsafe {
             Shell_NotifyIconW(NIM_MODIFY, &self.tray);
         }
-        if self
-            .snapshot
-            .as_ref()
-            .is_some_and(|previous| previous.state != snapshot.state)
-            && matches!(snapshot.state, State::Authenticated | State::Failed)
-        {
-            let cooldown = if snapshot.state == State::Authenticated {
-                180
-            } else {
-                300
-            };
-            if self.last_notice.as_ref().is_none_or(|(state, time)| {
-                *state != snapshot.state || time.elapsed() >= Duration::from_secs(cooldown)
-            }) {
-                self.notice("SYSU NetAuth", &snapshot.message);
-                self.last_notice = Some((snapshot.state.clone(), Instant::now()));
-            }
+        if self.state_notifications.should_notify(
+            self.snapshot.as_ref().map(|previous| &previous.state),
+            &snapshot.state,
+            self.config.desktop_notify,
+            Instant::now(),
+        ) {
+            self.notice("SYSU NetAuth", &snapshot.message);
         }
         let update = &snapshot.update;
         self.update_actions(
@@ -1205,7 +1197,7 @@ pub fn run() -> Result<()> {
         tasks,
         events: events.clone(),
         tray: unsafe { mem::zeroed() },
-        last_notice: None,
+        state_notifications: StateNotifications::default(),
         ignored_version: ui["ignored_version"].as_str().unwrap_or_default().into(),
         notified_version: ui["notified_version"].as_str().unwrap_or_default().into(),
         startup,
