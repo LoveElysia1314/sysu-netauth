@@ -1,10 +1,17 @@
 # SYSU NetAuth Rust 版
 
-支持 Windows 10/11 x64（GUI、CLI、后台服务）和 Linux x64（CLI、systemd 服务）。
+| 支持级别 | 平台 | 界面与服务 |
+| --- | --- | --- |
+| Tier 1 | Windows 10/11 AMD64 | GUI、CLI、后台服务 |
+| Tier 2 | Windows 10/11 AARCH64 | GUI、CLI、后台服务 |
+| Tier 2 | Linux AMD64 | CLI、systemd |
+| Tier 3 | macOS 11+ Apple Silicon / Intel | CLI、launchd |
+
+Tier 1 和 Tier 2 的构建与测试为发行必需检查。Tier 3 为实验性支持，失败不阻塞其他平台发行。
 
 ## Windows 安装
 
-使用 [Releases](https://github.com/peterrobot/sysu-netauth/releases) 中的 `Rust_msvc_x64` 或 `Rust_gnu_x64` Setup 安装程序。需要 [Npcap](https://npcap.com/#download)，程序提供安装引导。
+使用 [Releases](https://github.com/peterrobot/sysu-netauth/releases) 中的 `Rust_msvc_x64` 或 `Rust_gnu_x64` Setup；Windows on ARM 选择 `Rust_msvc_arm64`。需要 [Npcap](https://npcap.com/#download)，其官方安装程序会自动选择本机架构。
 
 在设置窗口填写 NetID 和密码，启用自动认证与服务独立运行。退出 GUI 后服务继续认证，并在睡眠、休眠恢复后重新连接。请先退出其他 802.1X 客户端。
 
@@ -33,6 +40,15 @@ Windows 需要 Visual Studio C++ 工具和 Windows SDK；在开发者 PowerShell
 
 安装 Inno Setup 6 后，省略 `-SkipInstaller` 可生成安装包。输出位于 `apps/rust/dist/`，包含 CLI、服务和 GUI 三个 EXE。
 
+构建脚本默认使用 Rust 工具链的主机架构。交叉构建 ARM64 需安装 VS 的 ARM64 C++ 工具与 Rust 目标：
+
+```powershell
+rustup target add aarch64-pc-windows-msvc
+./apps/rust/scripts/build.ps1 -Target aarch64-pc-windows-msvc -SkipInstaller
+```
+
+ARM64 输出：`apps/rust/dist/arm64/sysu_netauth/`。
+
 ### Linux → Windows 交叉编译
 
 ```sh
@@ -43,6 +59,15 @@ sh apps/rust/scripts/build-windows.sh
 ```
 
 输出：`apps/rust/dist/sysu-netauth-windows-x64.zip`（MSVC，静态 CRT）。SDK 缓存默认位于 `target/xwin`，可用 `XWIN_CACHE_DIR` 修改；LLVM 工具带版本后缀时可设置 `NETAUTH_RC=/usr/bin/llvm-rc-19`。
+
+ARM64 使用相同工具：
+
+```sh
+rustup target add aarch64-pc-windows-msvc
+sh apps/rust/scripts/build-windows.sh aarch64-pc-windows-msvc
+```
+
+输出：`apps/rust/dist/arm64/sysu-netauth-windows-arm64.zip`（MSVC，静态 CRT）。
 
 解压到固定目录后，在 Windows 管理员终端注册服务：
 
@@ -81,9 +106,15 @@ sudo sysu_netauth authenticate
 
 停止并禁用服务：`sudo systemctl disable --now sysu-netauth`。
 
+### macOS 安装
+
+提供 Apple Silicon（`macos_arm64`）与 Intel（`macos_x64`）程序包，需有线以太网，无需 Npcap。安装、配置与卸载见 [macOS 文档](docs/MACOS.md)。
+
+在 macOS 上构建：`sh apps/rust/scripts/build-macos.sh`。输出位于 `apps/rust/dist/`。
+
 ## CLI
 
-Windows 使用管理员终端；Linux 使用 `sudo`。
+Windows 使用管理员终端；Linux 与 macOS 的服务操作使用 `sudo`。
 
 ```sh
 sysu_netauth interfaces

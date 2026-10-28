@@ -11,6 +11,15 @@
 #ifndef MyAppAbi
   #define MyAppAbi "msvc"
 #endif
+#ifndef MyAppArch
+  #define MyAppArch "x64"
+#endif
+#if MyAppArch != "x64" && MyAppArch != "arm64"
+  #error Unsupported MyAppArch
+#endif
+#if MyAppArch == "arm64" && MyAppAbi != "msvc"
+  #error ARM64 requires the MSVC build
+#endif
 #define MyAppName "SYSU NetAuth"
 #define MyAppId "SYSUNetAuth"
 #define MyAppGuid "7E9B2C3A-1D4F-4E8A-9B6C-2F3D0E5A7C1B"
@@ -28,10 +37,15 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=
-ArchitecturesAllowed=x64compatible
+#if MyAppArch == "arm64"
+ArchitecturesAllowed=arm64
+ArchitecturesInstallIn64BitMode=arm64
+#else
+ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os
+#endif
 OutputDir=..\dist
-OutputBaseFilename=SYSUNetAuth_Rust_{#MyAppAbi}_x64_Setup_v{#MyAppVersion}
+OutputBaseFilename=SYSUNetAuth_Rust_{#MyAppAbi}_{#MyAppArch}_Setup_v{#MyAppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 SetupIconFile=..\assets\icon-ethernet.ico

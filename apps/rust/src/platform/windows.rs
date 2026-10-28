@@ -136,7 +136,9 @@ fn pcap_api() -> Result<Arc<PcapApi>> {
         };
         ensure!(
             !module.is_null(),
-            "Npcap is unavailable. Install Npcap from https://npcap.com/#download"
+            "Npcap is unavailable for {} ({}). Install the official Npcap package from https://npcap.com/#download; it selects the correct architecture automatically",
+            std::env::consts::ARCH,
+            io::Error::last_os_error()
         );
         macro_rules! symbol {
             ($name:literal,$ty:ty) => {{
@@ -398,7 +400,7 @@ pub fn adapters() -> Result<Vec<Adapter>> {
     }
     bail!("adapter list kept changing")
 }
-pub fn monitor(events: Arc<Signal>) -> Result<Monitor> {
+pub fn monitor(events: Arc<Signal>, _power: Arc<PowerNotifier>) -> Result<Monitor> {
     unsafe extern "system" fn changed(
         context: *const c_void,
         _: *const MIB_IPINTERFACE_ROW,

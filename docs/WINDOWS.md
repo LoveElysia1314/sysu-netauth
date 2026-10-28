@@ -1,12 +1,12 @@
 # Windows 安装与维护
 
-支持 Windows 10/11 x64，安装和管理后台服务需要管理员权限。
+支持 Windows 10/11 x64 与 ARM64（实验性），安装和管理后台服务需要管理员权限。
 
 ## 安装
 
-从 [Releases](https://github.com/peterrobot/sysu-netauth/releases) 下载 Setup EXE。Rust 版一般选择 `Rust_msvc_x64`；`Rust_gnu_x64` 提供相同功能。`Python_x64` 为原 Python 版。
+从 [Releases](https://github.com/peterrobot/sysu-netauth/releases) 下载 Setup EXE。x64 选择 `Rust_msvc_x64` 或 `Rust_gnu_x64`；Windows on ARM 选择 `Rust_msvc_arm64`。`Python_x64` 为原 Python 版。
 
-1. 运行 Setup，按提示安装 [Npcap](https://npcap.com/#download)。Python 版需开启 Npcap 的 WinPcap API 兼容模式。
+1. 运行 Setup，按提示安装 [Npcap](https://npcap.com/#download)。官方安装程序自动选择 x64 / ARM64 驱动和 DLL；不要手动复制其他架构的 DLL。Python 版需开启 Npcap 的 WinPcap API 兼容模式。
 2. 打开 SYSU NetAuth，填写 NetID 和密码，选择有线网卡并认证。
 3. 启用自动认证和「服务独立运行」，即可退出 GUI 并由服务保持认证。
 

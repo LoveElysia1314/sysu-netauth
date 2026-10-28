@@ -291,10 +291,11 @@ impl Listener {
     fn accept(&self) -> Result<Stream> {
         use std::os::fd::AsRawFd;
         let (stream, _) = self.0.accept()?;
-        let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
-        let mut size = std::mem::size_of_val(&cred) as u32;
-        ensure!(
-            unsafe {
+        #[cfg(target_os = "linux")]
+        let authorized = {
+            let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+            let mut size = std::mem::size_of_val(&cred) as u32;
+            (unsafe {
                 libc::getsockopt(
                     stream.as_raw_fd(),
                     libc::SOL_SOCKET,
@@ -302,10 +303,16 @@ impl Listener {
                     (&mut cred as *mut libc::ucred).cast(),
                     &mut size,
                 )
-            } == 0
-                && cred.uid == 0,
-            "unauthorized IPC peer"
-        );
+            }) == 0
+                && cred.uid == 0
+        };
+        #[cfg(target_os = "macos")]
+        let authorized = {
+            let mut uid = 1;
+            let mut gid = 1;
+            (unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) }) == 0 && uid == 0
+        };
+        ensure!(authorized, "unauthorized IPC peer");
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         stream.set_write_timeout(Some(Duration::from_secs(5)))?;
         Ok(stream)

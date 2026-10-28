@@ -12,12 +12,24 @@ use std::{
 mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::*;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::*;
+#[cfg(unix)]
+mod unix;
+#[cfg(target_os = "linux")]
+pub use unix::https_get;
+#[cfg(unix)]
+pub use unix::{instance_lock, is_admin, ping, signal_thread};
+#[cfg(any(target_os = "macos", test))]
+mod bpf;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
 pub use windows::*;
-#[cfg(not(any(target_os = "linux", windows)))]
-compile_error!("Only Windows and Linux are supported");
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+compile_error!("Only Windows, Linux and macOS are supported");
 
 #[derive(Clone, Default, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Adapter {

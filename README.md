@@ -4,7 +4,7 @@
 
 | 版本 | 平台 | 文档 |
 | --- | --- | --- |
-| Rust | Windows 10/11 x64、Linux x64 | [安装、构建与 CLI](apps/rust/README.md) |
+| Rust | Windows 10/11 x64 / ARM64、Linux x64、macOS Apple Silicon / Intel | [安装、构建与 CLI](apps/rust/README.md) |
 | Python | Windows | [运行、构建与 CLI](apps/python/README.md) |
 
 ## Windows 安装
@@ -12,6 +12,7 @@
 从 [Releases](https://github.com/peterrobot/sysu-netauth/releases) 下载对应的 Setup 安装程序：
 
 - `SYSUNetAuth_Rust_msvc_x64_Setup_v<版本>.exe`
+- `SYSUNetAuth_Rust_msvc_arm64_Setup_v<版本>.exe`（Windows on ARM）
 - `SYSUNetAuth_Rust_gnu_x64_Setup_v<版本>.exe`
 - `SYSUNetAuth_Python_x64_Setup_v<版本>.exe`
 
@@ -19,7 +20,9 @@
 
 Rust 的 MSVC 与 GNU 安装包功能相同，一般选择 MSVC。Rust 和 Python 共用服务与配置，不能同时运行。版本切换与故障排查见 [Windows 安装说明](docs/WINDOWS.md)。
 
-发行页同时提供 Windows 便携二进制 ZIP、Linux x64 程序包和 SHA-256 校验文件。
+平台支持级别见 [Rust 文档](apps/rust/README.md)。macOS 为实验性支持。
+
+发行页同时提供 Windows 便携 ZIP、Linux x64 与 macOS 程序包，以及 SHA-256 校验文件。macOS 使用方法见 [macOS 文档](apps/rust/docs/MACOS.md)。
 
 ## 从源码构建
 

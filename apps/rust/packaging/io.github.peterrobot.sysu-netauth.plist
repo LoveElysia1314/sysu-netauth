@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>io.github.peterrobot.sysu-netauth</string>
+  <key>ProgramArguments</key>
+  <array><string>/Library/PrivilegedHelperTools/sysu_netauth_service</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>ExitTimeOut</key><integer>20</integer>
+  <key>Umask</key><integer>63</integer>
+  <key>StandardOutPath</key><string>/Library/Application Support/SYSUNetAuth/service_bootstrap.log</string>
+  <key>StandardErrorPath</key><string>/Library/Application Support/SYSUNetAuth/service_bootstrap.log</string>
+</dict>
+</plist>

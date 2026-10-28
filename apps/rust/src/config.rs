@@ -94,12 +94,21 @@ impl Default for Paths {
                 endpoint: PathBuf::from(r"\\.\pipe\SYSUNetAuth-v1"),
             }
         }
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         {
             Self {
                 config: "/etc/sysu-netauth/config.json".into(),
                 state: "/var/lib/sysu-netauth".into(),
                 endpoint: "/run/sysu-netauth/control.sock".into(),
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let base = PathBuf::from("/Library/Application Support/SYSUNetAuth");
+            Self {
+                config: base.join("config.json"),
+                state: base,
+                endpoint: "/var/run/sysu-netauth/control.sock".into(),
             }
         }
     }
