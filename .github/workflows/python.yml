@@ -1,8 +1,9 @@
 name: Python build and test
 on:
   push:
-    branches: ['**']
+    branches: [main, dev]
   pull_request:
+    branches: [main, dev]
   workflow_call:
     inputs:
       release_tag:
