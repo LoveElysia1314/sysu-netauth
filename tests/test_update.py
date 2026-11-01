@@ -5,7 +5,7 @@ import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
-from sysu_netauth.core.config import UpdateState
+from sysu_netauth.core.config import APP_VERSION, UpdateState
 from sysu_netauth.core.update import (
     ReleaseInfo,
     UPDATE_MANIFEST_SOURCES,
@@ -140,7 +140,7 @@ class UpdateCheckerTests(unittest.TestCase):
             self.checker._run_check(previous)
 
         self.assertTrue(saved[0].available)
-        self.assertEqual(saved[0].current_version, "0.6.2")
+        self.assertEqual(saved[0].current_version, APP_VERSION)
         event_log.assert_called_once_with("0.7.0")
 
     def test_failure_uses_backoff_and_keeps_previous_release(self) -> None:

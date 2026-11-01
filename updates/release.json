@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "version": "0.6.2",
-  "published_at": "2026-07-24T00:00:00+08:00",
-  "release_url": "https://github.com/LoveElysia1314/sysu-netauth/releases/tag/v0.6.2",
-  "summary": "修复服务并发读写导致的异常退出，新增 Gitee 优先的服务端低频更新检查，并强化管理员权限、安装升级与构建流程。",
+  "version": "0.6.3",
+  "published_at": "2026-11-01T00:00:00+08:00",
+  "release_url": "https://github.com/LoveElysia1314/sysu-netauth/releases/tag/v0.6.3",
+  "summary": "修复状态文件短暂读取失败后重复弹出连接成功通知的问题，保留真实断线重连时的通知。",
   "channel": "stable"
 }

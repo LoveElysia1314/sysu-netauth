@@ -323,7 +323,9 @@ class CampusTray:
     def _poll_service_status(self) -> None:
         status = read_status()
         stale = self._status_is_stale(status.updated_at)
-        if stale and status.state != "stopped":
+        # 读取失败也会返回 stopped，但没有有效时间戳；不能将其当作
+        # 真实的认证状态变化，否则下一次正常读取会重复弹出成功通知。
+        if stale:
             icon_key, label = "red", "服务不可用"
             self.set_state(icon_key, label)
             if not self._last_stale_state:

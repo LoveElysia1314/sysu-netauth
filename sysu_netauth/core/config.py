@@ -12,7 +12,7 @@ from typing import Any
 
 APP_DISPLAY_NAME = "SYSU NetAuth"
 APP_ID = "SYSUNetAuth"
-APP_VERSION = "0.6.2"
+APP_VERSION = "0.6.3"
 
 PROGRAMDATA_ROOT = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
 APP_DIR = PROGRAMDATA_ROOT / APP_ID
