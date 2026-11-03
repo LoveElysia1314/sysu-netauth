@@ -11,7 +11,6 @@ import tarfile
 PLATFORM_TIERS = {
     "rust-msvc-x64": 1,
     "rust-gnu-x64": 1,
-    "python-x64": 1,
     "rust-msvc-arm64": 2,
     "rust-linux-x64": 2,
     "rust-macos-arm64": 3,
@@ -38,7 +37,6 @@ def expected_assets(info: dict, *, platforms: set[str] | None = None) -> dict[st
         ("Rust_msvc_x64", info["version"]),
         ("Rust_msvc_arm64", info["version"]),
         ("Rust_gnu_x64", info["version"]),
-        ("Python_x64", info["python_version"]),
     ):
         stem = f"SYSUNetAuth_{label}"
         identifier = label.lower().replace("_", "-")

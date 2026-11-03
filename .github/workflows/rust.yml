@@ -14,8 +14,6 @@ on:
         default: false
 permissions:
   contents: read
-env:
-  PIP_CACHE_DIR: ${{ github.workspace }}/.cache/pip-build
 jobs:
   test:
     name: Tier ${{ matrix.tier }} / ${{ matrix.platform }}
@@ -49,11 +47,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-          # Ordinary Windows jobs only run standard-library installer tests.
-          cache: ${{ inputs.release_tag != '' && 'pip' || '' }}
-          cache-dependency-path: requirements-build.txt
-      - if: inputs.release_tag != ''
-        run: python -m pip install -r requirements-build.txt
       - if: inputs.release_tag != ''
         run: python scripts/release_version.py --write
       - uses: dtolnay/rust-toolchain@stable
@@ -91,17 +84,17 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: sudo -n --
         run: cargo test --locked --test linux_network -- --ignored --nocapture
       - if: runner.os == 'Windows'
-        run: ./apps/rust/scripts/build.ps1 -SkipInstaller -Target ${{ matrix.target }}
+        run: ./scripts/build.ps1 -SkipInstaller -Target ${{ matrix.target }}
       - if: runner.os == 'Windows' && inputs.release_tag != ''
         run: |
-          $dist = if ('${{ matrix.arch }}' -eq 'arm64') { 'apps/rust/dist/arm64/sysu_netauth' } else { 'apps/rust/dist/sysu_netauth' }
+          $dist = if ('${{ matrix.arch }}' -eq 'arm64') { 'dist/arm64/sysu_netauth' } else { 'dist/sysu_netauth' }
           Copy-Item build/release-version.json $dist
       - if: runner.os == 'Linux'
-        run: sh apps/rust/scripts/build.sh
+        run: sh scripts/build.sh
       - uses: actions/upload-artifact@v4
         with:
           name: sysu-netauth-Rust-${{ runner.os }}${{ runner.os == 'Windows' && '-msvc' || '' }}${{ matrix.arch == 'arm64' && '-arm64' || '' }}
-          path: apps/rust/dist/${{ matrix.arch == 'arm64' && 'arm64/' || '' }}
+          path: dist/${{ matrix.arch == 'arm64' && 'arm64/' || '' }}
           if-no-files-found: error
           overwrite: true
   windows-gnu:
@@ -117,10 +110,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-          cache: pip
-          cache-dependency-path: requirements-build.txt
-      - if: inputs.release_tag != ''
-        run: python -m pip install -r requirements-build.txt
       - if: inputs.release_tag != ''
         run: python scripts/release_version.py --write
       - uses: dtolnay/rust-toolchain@stable
@@ -135,13 +124,13 @@ jobs:
           shared-key: linux-windows-gnu
           cache-bin: false
       - run: cargo clippy --locked --target x86_64-pc-windows-gnu --all-targets -- -D warnings
-      - run: sh apps/rust/scripts/build-windows-gnu.sh
+      - run: sh scripts/build-windows-gnu.sh
       - if: inputs.release_tag != ''
-        run: cp build/release-version.json apps/rust/dist/gnu/sysu_netauth/
+        run: cp build/release-version.json dist/gnu/sysu_netauth/
       - uses: actions/upload-artifact@v4
         with:
           name: sysu-netauth-Rust-Windows-gnu
-          path: apps/rust/dist/gnu/
+          path: dist/gnu/
           if-no-files-found: error
           overwrite: true
   macos:
@@ -161,12 +150,12 @@ jobs:
             tier: 1
             platform: AMD64
             arch: x64
-            directory: apps/rust/dist
+            directory: dist
           - target: aarch64-pc-windows-msvc
             tier: 2
             platform: AARCH64
             arch: arm64
-            directory: apps/rust/dist/arm64
+            directory: dist/arm64
     env:
       # Keep the SDK outside target/, which rust-cache prunes before saving.
       XWIN_CACHE_DIR: ${{ github.workspace }}/.cache/xwin
@@ -180,10 +169,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-          cache: pip
-          cache-dependency-path: requirements-build.txt
-      - if: inputs.release_tag != ''
-        run: python -m pip install -r requirements-build.txt
       - if: inputs.release_tag != ''
         run: python scripts/release_version.py --write
       - uses: dtolnay/rust-toolchain@stable
@@ -213,8 +198,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.XWIN_CACHE_DIR }}
-          key: xwin-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ env.CARGO_XWIN_VERSION }}-${{ hashFiles('apps/rust/scripts/build-windows.sh') }}
-      - run: sh apps/rust/scripts/build-windows.sh ${{ matrix.target }}
+          key: xwin-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ env.CARGO_XWIN_VERSION }}-${{ hashFiles('scripts/build-windows.sh') }}
+      - run: sh scripts/build-windows.sh ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
           name: sysu-netauth-Rust-Windows-msvc-from-Linux-${{ matrix.arch }}
