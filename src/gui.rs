@@ -35,6 +35,7 @@ use theme::Theme;
 
 const APP_EVENT: u32 = WM_APP + 1;
 const TRAY: u32 = WM_APP + 2;
+const NOTICE_TIMER: usize = 1;
 const SAVE: u16 = 101;
 const CONNECT: u16 = 102;
 const DISCONNECT: u16 = 103;
@@ -110,6 +111,7 @@ struct Window {
     events: Arc<Mutex<Vec<UiEvent>>>,
     tray: NOTIFYICONDATAW,
     state_notifications: StateNotifications,
+    subscription_connected: bool,
     ignored_version: String,
     notified_version: String,
     startup: bool,
@@ -209,6 +211,7 @@ impl Window {
             events: events.clone(),
             tray: unsafe { mem::zeroed() },
             state_notifications: StateNotifications::default(),
+            subscription_connected: false,
             ignored_version: ui["ignored_version"].as_str().unwrap_or_default().into(),
             notified_version: ui["notified_version"].as_str().unwrap_or_default().into(),
             startup,
@@ -756,10 +759,12 @@ impl Window {
         );
         Ok(c)
     }
-    fn task(&self, task: Task) {
+    fn task(&self, task: Task) -> bool {
         if self.tasks.try_send(task).is_err() {
             platform::show_error("操作队列已满，请稍后再试");
+            return false;
         }
+        true
     }
     fn notice(&mut self, title: &str, message: &str) {
         if !self.config.desktop_notify {
@@ -774,6 +779,7 @@ impl Window {
         }
     }
     fn update_snapshot(&mut self, snapshot: Snapshot) {
+        self.subscription_connected = true;
         self.refresh_adapters(&snapshot.adapters);
         set_text(self.status, &snapshot.message);
         self.status_style(
@@ -826,14 +832,15 @@ impl Window {
         unsafe {
             Shell_NotifyIconW(NIM_MODIFY, &self.tray);
         }
-        if self.state_notifications.should_notify(
-            self.snapshot.as_ref().map(|previous| &previous.state),
+        if let Some(notice) = self.state_notifications.observe(
             &snapshot.state,
+            snapshot.suspended || snapshot.manual_disconnect,
             self.config.desktop_notify,
             Instant::now(),
         ) {
-            self.notice("SYSU NetAuth", &snapshot.message);
+            self.notice("SYSU NetAuth", notice.message(&snapshot.message));
         }
+        self.schedule_notice();
         let update = &snapshot.update;
         self.update_actions(
             update.available && update.latest_version != self.ignored_version,
@@ -866,6 +873,41 @@ impl Window {
         }
         self.snapshot = Some(snapshot);
     }
+    fn schedule_notice(&self) {
+        unsafe {
+            KillTimer(self.hwnd, NOTICE_TIMER);
+        }
+        if self.subscription_connected {
+            if let Some(deadline) = self
+                .state_notifications
+                .deadline(self.config.desktop_notify)
+            {
+                let milliseconds = deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis()
+                    .saturating_add(1)
+                    .clamp(10, u32::MAX as u128) as u32;
+                // A timer exists only while an unreported outage is pending.
+                if unsafe { SetTimer(self.hwnd, NOTICE_TIMER, milliseconds, None) } == 0 {
+                    eprintln!("cannot schedule connection notification");
+                }
+            }
+        }
+    }
+    fn notice_timeout(&mut self) {
+        unsafe {
+            KillTimer(self.hwnd, NOTICE_TIMER);
+        }
+        if self.subscription_connected {
+            if let Some(notice) = self
+                .state_notifications
+                .poll(self.config.desktop_notify, Instant::now())
+            {
+                self.notice("SYSU NetAuth", notice.message("连接已中断"));
+            }
+            self.schedule_notice();
+        }
+    }
     fn save_ui_state(&self) {
         let _ = config::atomic_write(
             &Paths::default().state.join("ui_state.json"),
@@ -878,6 +920,8 @@ impl Window {
             match event {
                 UiEvent::Snapshot(s) => self.update_snapshot(*s),
                 UiEvent::Disconnected(e) => {
+                    self.subscription_connected = false;
+                    self.schedule_notice();
                     self.status_style(&State::Failed, "服务未连接");
                     set_text(self.status, &format!("服务连接已断开：{e}"));
                 }
@@ -889,12 +933,13 @@ impl Window {
                     }
                 },
                 UiEvent::Reply(id, result) => match result {
-                    Err(e) => platform::show_error(&e),
-                    Ok(response) => {
-                        if !response.ok {
-                            platform::show_error(response.error.as_deref().unwrap_or("操作失败"));
-                            continue;
+                    Err(e) => {
+                        if id == CONNECT {
+                            self.state_notifications.cancel_connect_request();
                         }
+                        platform::show_error(&e);
+                    }
+                    Ok(response) => {
                         if id == 1 {
                             match serde_json::from_value(response.data) {
                                 Ok(c) => {
@@ -903,10 +948,7 @@ impl Window {
                                 }
                                 Err(e) => platform::show_error(&e.to_string()),
                             }
-                        } else if id == SAVE || id == CONNECT {
-                            if id == CONNECT {
-                                self.task(Task::Request(999, Action::Authenticate));
-                            }
+                        } else if id == SAVE {
                             set_text(self.status, "设置已保存");
                         }
                     }
@@ -919,12 +961,27 @@ impl Window {
             SAVE | CONNECT => match self.collect() {
                 Ok(config) => {
                     self.config = config.clone();
-                    self.task(Task::Request(id, Action::SetConfig { config }));
+                    if id == CONNECT {
+                        self.state_notifications.connect_requested();
+                    }
+                    let action = if id == CONNECT {
+                        Action::Connect { config }
+                    } else {
+                        Action::SetConfig { config }
+                    };
+                    if !self.task(Task::Request(id, action)) {
+                        self.state_notifications.cancel_connect_request();
+                    }
+                    self.schedule_notice();
                 }
                 Err(e) => platform::show_error(&e.to_string()),
             },
-            DISCONNECT => self.task(Task::Request(DISCONNECT, Action::Logoff)),
-            UPDATE => self.task(Task::Request(UPDATE, Action::CheckUpdate)),
+            DISCONNECT => {
+                self.task(Task::Request(DISCONNECT, Action::Logoff));
+            }
+            UPDATE => {
+                self.task(Task::Request(UPDATE, Action::CheckUpdate));
+            }
             MANUAL => {
                 self.populate_adapters();
                 self.update_options();
@@ -957,7 +1014,9 @@ impl Window {
                     self.update_actions(false, false);
                 }
             }
-            NPCAP => self.task(Task::InstallNpcap),
+            NPCAP => {
+                self.task(Task::InstallNpcap);
+            }
             MENU_SHOW => unsafe {
                 ShowWindow(self.hwnd, SW_SHOW);
                 SetForegroundWindow(self.hwnd);
@@ -1132,6 +1191,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, message: u32, wparam: usize, lpara
                 window.events();
                 return 0;
             }
+            WM_TIMER if wparam == NOTICE_TIMER => {
+                window.notice_timeout();
+                return 0;
+            }
             WM_COMMAND => {
                 window.command((wparam & 0xffff) as u16);
                 return 0;
@@ -1255,16 +1318,15 @@ pub fn run() -> Result<()> {
             for task in rx {
                 match task {
                     Task::Request(id, action) => {
-                        let login = if let Action::SetConfig { config } = &action {
-                            Some(config.launch_gui_on_login)
-                        } else {
-                            None
+                        let login = match &action {
+                            Action::SetConfig { config } | Action::Connect { config } => {
+                                Some(config.launch_gui_on_login)
+                            }
+                            _ => None,
                         };
                         let result = ipc::request(&Paths::default(), action).and_then(|response| {
-                            if response.ok {
-                                if let Some(enabled) = login {
-                                    platform::set_login_task(enabled)?;
-                                }
+                            if let Some(enabled) = login {
+                                platform::set_login_task(enabled)?;
                             }
                             Ok(response)
                         });

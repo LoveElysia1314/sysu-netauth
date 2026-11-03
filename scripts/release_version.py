@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import re
+import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -47,6 +48,9 @@ def resolve(root: Path = ROOT, tag: str | None = None) -> dict:
     commit = git(root, "rev-parse", "HEAD")
     if git(root, "rev-parse", f"refs/tags/{tag}^{{commit}}") != commit:
         raise ValueError(f"Release tag {tag} does not point to the checked-out commit")
+    package = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))["package"]
+    if info["version"] != package["version"]:
+        raise ValueError("Release tag must match Cargo.toml package version")
     return info | {"commit": commit}
 
 

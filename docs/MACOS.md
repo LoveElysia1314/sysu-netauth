@@ -32,6 +32,8 @@ sudo sysu_netauth watch --json
 
 ## 管理与构建
 
+macOS 原生 GUI 已提供[开发预览及离线测试说明](../macos/README.md)，尚未随正式发行包分发；包含包内 CLI，并通过系统管理员授权控制后台服务；服务安装及真实认证尚待实机验证。
+
 查看服务：`sudo launchctl print system/io.github.peterrobot.sysu-netauth`。
 
 在解压目录卸载：`sudo sh uninstall-macos.sh`；同时删除保存的账号和设置：`sudo sh uninstall-macos.sh --purge`。

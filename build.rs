@@ -1,16 +1,12 @@
 fn main() {
-    let git_version = git_version::git_version!(
-        args = ["--tags", "--match", "v[0-9]*", "--abbrev=0"],
-        fallback = "0.0.0"
-    );
-    let version = git_version.strip_prefix('v').unwrap_or(git_version);
+    let version = std::env::var("CARGO_PKG_VERSION").expect("Cargo package version");
     println!("cargo:rerun-if-env-changed=NETAUTH_RELEASE_TAG");
     if let Ok(tag) = std::env::var("NETAUTH_RELEASE_TAG") {
         if !tag.is_empty() {
             assert_eq!(
                 version,
                 tag.trim_start_matches('v'),
-                "cached Git version differs from release tag; rebuild with a clean Cargo target directory"
+                "release tag must match Cargo.toml"
             );
         }
     }

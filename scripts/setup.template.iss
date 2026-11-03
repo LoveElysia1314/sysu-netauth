@@ -48,7 +48,7 @@ OutputDir=..\dist
 OutputBaseFilename=SYSUNetAuth_Rust_{#MyAppAbi}_{#MyAppArch}_Setup_v{#MyAppVersion}
 Compression=lzma2/max
 SolidCompression=yes
-SetupIconFile=..\assets\icon-ethernet.ico
+SetupIconFile=..\assets\icons\generated\windows\app.ico
 UninstallDisplayIcon={app}\sysu_netauth_gui.exe
 UninstallLogging=yes
 WizardStyle=modern
@@ -88,6 +88,7 @@ const
 #include "npcap.iss"
 #include "windows/process.iss"
 #include "windows/service.iss"
+#include "windows/data.iss"
 
 var
   ExistingInstallDir: String;
@@ -171,7 +172,7 @@ begin
     SetupStage('正在更新登录启动设置…');
     RunSetupCommand(ExpandConstant('{sys}\schtasks.exe'), '/Change /TN "SYSUNetAuth GUI" /TR "\"' + ExpandConstant('{app}\sysu_netauth_gui.exe') + '\" --startup"', 15, Code);
     SetupStage('正在设置配置目录权限…');
-    RunSetupCommand(ExpandConstant('{sys}\icacls.exe'), '"' + ExpandConstant('{commonappdata}\SYSUNetAuth') + '" /inheritance:r /remove:g *S-1-5-32-545 /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F /T', 30, Code);
+    SecureDataDirectory(ExpandConstant('{commonappdata}\SYSUNetAuth'));
     SetupStage('正在注册后台认证服务…');
     if not RunSetupCommand(ExpandConstant('{app}\sysu_netauth_service.exe'), '--install', 30, Code) or (Code <> 0) then
       RaiseException('Windows 服务注册失败或超时，请查看安装日志。错误码：' + IntToStr(Code));

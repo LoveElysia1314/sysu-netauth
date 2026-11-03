@@ -1,6 +1,6 @@
 # 发行维护
 
-版本来自 Git 标签，格式为 `v0.7.0`，或带 `alpha.N`、`beta.N`、`rc.N` 的预发布标签，例如 `v0.7.0-beta.2`。三个主版本分量均不得超过 Windows 版本字段的上限 65535。
+版本统一维护在 `Cargo.toml`，修改后同步更新 `Cargo.lock`。发行标签在版本前加 `v`，例如 `v0.7.0` 或 `v0.7.0-beta.2`；允许 `alpha.N`、`beta.N`、`rc.N` 预发布后缀。三个主版本分量均不得超过 Windows 版本字段的上限 65535。
 
 ## 发布流程
 
@@ -38,4 +38,4 @@ ARM64 构建使用 `-Target aarch64-pc-windows-msvc`，将元数据复制到 `di
 
 输出位于 `dist/windows-installers/`，也可用 `--output-dir` 和 `--compiler` 指定目录或 Inno Setup 编译器。
 
-未打标签的开发构建显示最近可达的版本标签；发行元数据则要求所选标签准确指向当前提交。版本说明统一维护在 [GitHub Releases](https://github.com/LoveElysia1314/sysu-netauth/releases)。
+开发构建与发行构建均显示包版本。发行工具还会校验标签与包版本一致，且标签准确指向当前提交。版本说明统一维护在 [GitHub Releases](https://github.com/LoveElysia1314/sysu-netauth/releases)。
