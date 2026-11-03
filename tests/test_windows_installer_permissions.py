@@ -1,6 +1,6 @@
 """Exercise the installer's actual ACL repair on an isolated data directory."""
 import ctypes
-import json
+import struct
 import os
 from pathlib import Path
 import subprocess
@@ -14,20 +14,6 @@ ROOT = Path(__file__).resolve().parent.parent
 
 @unittest.skipUnless(os.name == "nt", "requires elevated Windows and Inno Setup 6")
 class InstallerPermissionsTests(unittest.TestCase):
-    def powershell(self, script, *args):
-        system = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0"
-        environment = os.environ.copy()
-        # PowerShell 7 / VS may export a module path incompatible with Windows
-        # PowerShell 5.1. The ACL check needs only its built-in security module.
-        environment["PSModulePath"] = str(system / "Modules")
-        result = subprocess.run(
-            [str(system / "powershell.exe"), "-NoProfile", "-NonInteractive", "-Command",
-             "$ErrorActionPreference='Stop'; " + script, *args],
-            capture_output=True, timeout=30, env=environment,
-        )
-        self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).decode(errors="replace"))
-        return result.stdout.decode("utf-8-sig").strip()
-
     def run_fixture(self, directory, data):
         subprocess.run(
             [str(find_compiler()), "/Q", f"/O{directory}", f"/DTestDirectory={data}",
@@ -45,24 +31,45 @@ class InstallerPermissionsTests(unittest.TestCase):
         self.assertIn("Installer data permissions regression checks passed", contents)
 
     def acl(self, path):
-        # Pass the path through the environment, never PowerShell source text.
-        old = os.environ.get("NETAUTH_TEST_ACL_PATH")
-        os.environ["NETAUTH_TEST_ACL_PATH"] = str(path)
+        api = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        pointer = ctypes.c_void_p
+        api.GetNamedSecurityInfoW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+                                            pointer, pointer, ctypes.POINTER(pointer), pointer,
+                                            ctypes.POINTER(pointer)]
+        api.GetNamedSecurityInfoW.restype = ctypes.c_uint32
+        api.GetAce.argtypes = [pointer, ctypes.c_uint32, ctypes.POINTER(pointer)]
+        api.GetAce.restype = ctypes.c_int
+        api.ConvertSidToStringSidW.argtypes = [pointer, ctypes.POINTER(pointer)]
+        api.ConvertSidToStringSidW.restype = ctypes.c_int
+        kernel.LocalFree.argtypes = [pointer]
+        kernel.LocalFree.restype = pointer
+        dacl, descriptor = pointer(), pointer()
+        error = api.GetNamedSecurityInfoW(str(path), 1, 4, None, None,
+                                         ctypes.byref(dacl), None, ctypes.byref(descriptor))
+        self.assertEqual(error, 0, f"GetNamedSecurityInfoW failed: {error}")
         try:
-            return json.loads(self.powershell(
-                "[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "
-                "$acl=Get-Acl -LiteralPath $env:NETAUTH_TEST_ACL_PATH; "
-                "@($acl.Access | ForEach-Object { "
-                "@{Sid=$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value; "
-                "Rights=[int]$_.FileSystemRights; Type=$_.AccessControlType.ToString(); "
-                "Inherited=$_.IsInherited; Propagation=$_.PropagationFlags.ToString()} "
-                "}) | ConvertTo-Json -Compress"
-            ))
+            self.assertTrue(dacl.value, "an unrestricted NULL DACL is not private")
+            count = struct.unpack("<BBHHH", ctypes.string_at(dacl, 8))[3]
+            result = []
+            for index in range(count):
+                ace = pointer()
+                self.assertTrue(api.GetAce(dacl, index, ctypes.byref(ace)), ctypes.get_last_error())
+                kind, flags, _, rights = struct.unpack("<BBHI", ctypes.string_at(ace, 8))
+                self.assertIn(kind, (0, 1), "unexpected ACL entry type")
+                sid = pointer()
+                self.assertTrue(api.ConvertSidToStringSidW(pointer(ace.value + 8), ctypes.byref(sid)),
+                                ctypes.get_last_error())
+                try:
+                    result.append({"Sid": ctypes.wstring_at(sid), "Rights": rights,
+                                   "Type": "Allow" if kind == 0 else "Deny",
+                                   "Inherited": bool(flags & 0x10),
+                                   "Propagation": "Special" if flags & 0x0c else "None"})
+                finally:
+                    kernel.LocalFree(sid)
+            return result
         finally:
-            if old is None:
-                os.environ.pop("NETAUTH_TEST_ACL_PATH", None)
-            else:
-                os.environ["NETAUTH_TEST_ACL_PATH"] = old
+            kernel.LocalFree(descriptor)
 
     def assert_private_writable(self, path, *, inherited):
         acl = self.acl(path)
@@ -121,6 +128,20 @@ class InstallerPermissionsTests(unittest.TestCase):
             self.run_fixture(directory, data)
             log = data / "service.log"
             log.write_text("first log\n", encoding="utf-8")
+            self.assert_private_writable(log, inherited=True)
+
+    def test_existing_explicit_grants_are_replaced(self):
+        self.assertTrue(ctypes.windll.shell32.IsUserAnAdmin(), "run in elevated Windows CI")
+        with tempfile.TemporaryDirectory(prefix="netauth explicit ACL ") as location:
+            directory = Path(location).resolve()
+            data = directory / "existing data"
+            data.mkdir()
+            subprocess.run(["icacls.exe", str(data), "/grant", "*S-1-3-4:(OI)(CI)F",
+                            "*S-1-1-0:(OI)(CI)R"], check=True, capture_output=True, timeout=30)
+            self.run_fixture(directory, data)
+            self.assert_private_writable(data, inherited=False)
+            log = data / "service.log"
+            log.write_text("fixture\n", encoding="utf-8")
             self.assert_private_writable(log, inherited=True)
 
 
