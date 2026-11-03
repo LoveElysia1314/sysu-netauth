@@ -1,0 +1,17 @@
+name: macOS GUI offline tests
+on:
+  push:
+    paths: ['macos/**', 'scripts/*macos*.sh', 'packaging/*gui-helper.plist', '.github/workflows/macos-gui.yml']
+  pull_request:
+    paths: ['macos/**', 'scripts/*macos*.sh', 'packaging/*gui-helper.plist', '.github/workflows/macos-gui.yml']
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: swift test --package-path macos
+      - run: sh scripts/test-macos-gui-offline.sh
+      - run: sh scripts/build-macos-gui.sh

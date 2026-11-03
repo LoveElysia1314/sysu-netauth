@@ -21,6 +21,8 @@ Windows 用户下载 `Setup` 安装包，按提示安装 [Npcap](https://npcap.c
 - [Linux 安装与服务管理](docs/LINUX.md)
 - [macOS 安装与服务管理](docs/MACOS.md)
 
+macOS 原生 GUI 已提供[源码开发预览](macos/README.md)，包含菜单栏、登录启动、状态通知和授权 helper；尚未纳入正式发行包，校园网认证仍需实机验证。
+
 ## 功能
 
 - 自动选择有线网卡，支持按设备固定选择和失败后切换候选网卡。
