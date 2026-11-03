@@ -1,4 +1,6 @@
+pub mod authentication;
 pub mod config;
+pub mod connectivity;
 pub mod diagnostics;
 pub mod engine;
 #[cfg(windows)]

@@ -15,10 +15,17 @@ ROOT = Path(__file__).resolve().parent.parent
 @unittest.skipUnless(os.name == "nt", "requires elevated Windows and Inno Setup 6")
 class InstallerPermissionsTests(unittest.TestCase):
     def powershell(self, script, *args):
+        system = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0"
+        environment = os.environ.copy()
+        # PowerShell 7 / VS may export a module path incompatible with Windows
+        # PowerShell 5.1. The ACL check needs only its built-in security module.
+        environment["PSModulePath"] = str(system / "Modules")
         result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script, *args],
-            check=True, capture_output=True, timeout=30,
+            [str(system / "powershell.exe"), "-NoProfile", "-NonInteractive", "-Command",
+             "$ErrorActionPreference='Stop'; " + script, *args],
+            capture_output=True, timeout=30, env=environment,
         )
+        self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).decode(errors="replace"))
         return result.stdout.decode("utf-8-sig").strip()
 
     def run_fixture(self, directory, data):

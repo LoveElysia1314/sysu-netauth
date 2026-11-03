@@ -1,7 +1,9 @@
 use anyhow::{Result, bail, ensure};
 use clap::{Parser, Subcommand};
 use netauth::{
+    authentication::{self, Exchange},
     config::{self, Paths},
+    connectivity::Probe,
     engine::{Event, Snapshot, State},
     ipc::{self, Action},
     platform, protocol,
@@ -150,22 +152,24 @@ fn direct(
     #[cfg(windows)]
     platform::register_stop_notifier(interrupt.clone());
     let mut last = "no EAP server response".to_string();
-    for adapter in &adapters {
-        let session = platform::Session::open(adapter, 1, tx.clone())?;
+    for (index, adapter) in adapters.iter().enumerate() {
+        let generation = index as u64 + 1;
+        let session = match platform::Session::open(adapter, generation, tx.clone()) {
+            Ok(session) => session,
+            Err(error) => {
+                last = error.to_string();
+                continue;
+            }
+        };
         session.capture.send(&protocol::control(adapter.mac, 1))?;
         let deadline = Instant::now() + Duration::from_secs(timeout);
         let mut next_start = Instant::now() + Duration::from_secs(1);
         let mut peer = None;
         let mut eap_success = false;
-        let stop = std::sync::Arc::new(platform::Cancel::new()?);
-        let mut checker: Option<std::thread::JoinHandle<()>> = None;
+        let mut checker: Option<Probe> = None;
         let mut failure = false;
         while Instant::now() < deadline {
             if interrupt.take() {
-                stop.set();
-                if let Some(t) = checker.take() {
-                    let _ = t.join();
-                }
                 bail!("interrupted");
             }
             let now = Instant::now();
@@ -173,71 +177,44 @@ fn direct(
                 .min(if peer.is_none() { next_start } else { deadline })
                 .saturating_duration_since(now);
             match rx.recv_timeout(wait) {
-                Ok(Event::Packet(_, bytes)) => {
+                Ok(Event::Packet(g, bytes)) if g == generation => {
                     let Some(packet) = protocol::parse(&bytes) else {
                         continue;
                     };
-                    if packet.source == adapter.mac
-                        || (packet.destination != adapter.mac
-                            && packet.destination != protocol::PAE)
+                    if probe
+                        && packet.code == 1
+                        && authentication::addressed_to(&packet, adapter.mac)
                     {
-                        continue;
-                    }
-                    if peer.is_some_and(|mac| mac != packet.source) {
-                        continue;
-                    }
-                    if probe && packet.code == 1 {
                         output(
                             &serde_json::json!({"iface":adapter.name,"server":protocol::mac_text(packet.source),"eap_server":true}),
                             json,
                         )?;
                         return Ok(());
                     }
-                    if packet.code == 1 {
-                        peer = Some(packet.source);
-                        if let Some(answer) =
-                            protocol::answer(adapter.mac, packet.source, &packet, &user, &password)?
-                        {
-                            session.capture.send(&answer)?;
+                    match authentication::receive(
+                        &mut peer,
+                        adapter.mac,
+                        &packet,
+                        &user,
+                        &password,
+                        eap_success,
+                    )? {
+                        Exchange::Ignore => {}
+                        Exchange::Response { bytes, .. } => session.capture.send(&bytes)?,
+                        Exchange::Failure => {
+                            last = "EAP authentication rejected".into();
+                            failure = true;
+                            break;
                         }
-                    } else if packet.code == 4 {
-                        last = "EAP authentication rejected".into();
-                        failure = true;
-                        break;
-                    } else if packet.code == 3 && peer.is_some() && !eap_success {
-                        eap_success = true;
-                        let tx = tx.clone();
-                        let cancel = stop.clone();
-                        checker = Some(std::thread::spawn(move || {
-                            if !platform::cancellable_wait(&cancel, Duration::from_secs(5)) {
-                                return;
-                            }
-                            for round in 0..3 {
-                                for ip in [[119, 29, 29, 29], [114, 114, 114, 114]] {
-                                    if platform::ping(ip.into(), &cancel) {
-                                        platform::deliver(
-                                            &tx,
-                                            Event::Connectivity(1, true),
-                                            &cancel,
-                                        );
-                                        return;
-                                    }
-                                }
-                                if round < 2
-                                    && !platform::cancellable_wait(&cancel, Duration::from_secs(10))
-                                {
-                                    return;
-                                }
-                            }
-                            platform::deliver(&tx, Event::Connectivity(1, false), &cancel);
-                        }));
+                        Exchange::Success if !eap_success => {
+                            eap_success = true;
+                            checker = Some(Probe::start(tx.clone(), generation)?);
+                        }
+                        Exchange::Success => {}
                     }
                 }
-                Ok(Event::Connectivity(_, ok)) => {
-                    stop.set();
-                    if let Some(t) = checker.take() {
-                        let _ = t.join();
-                    }
+                Ok(Event::Connectivity(g, ok)) if g == generation => {
+                    drop(checker.take());
                     if ok {
                         let s = Snapshot {
                             suspended: false,
@@ -257,16 +234,12 @@ fn direct(
                     failure = true;
                     break;
                 }
-                Ok(Event::CaptureError(_, error)) => {
+                Ok(Event::CaptureError(g, error)) if g == generation => {
                     last = error;
                     failure = true;
                     break;
                 }
                 Ok(Event::Stop) => {
-                    stop.set();
-                    if let Some(t) = checker.take() {
-                        let _ = t.join();
-                    }
                     bail!("interrupted");
                 }
                 _ => {}
@@ -276,10 +249,7 @@ fn direct(
                 next_start = Instant::now() + Duration::from_secs(1);
             }
         }
-        stop.set();
-        if let Some(t) = checker {
-            let _ = t.join();
-        }
+        drop(checker);
         if !failure {
             last = "authentication timed out".into();
         }

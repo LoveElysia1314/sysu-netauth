@@ -16,8 +16,10 @@ use std::{
 struct ChildGuard(Child);
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        unsafe {
-            libc::kill(self.0.id() as i32, libc::SIGTERM);
+        if self.0.try_wait().ok().flatten().is_none() {
+            unsafe {
+                libc::kill(self.0.id() as i32, libc::SIGTERM);
+            }
         }
         let _ = self.0.wait();
     }
@@ -168,7 +170,12 @@ fn isolated_resume_reauthenticates_without_gui_or_link_change() {
             username: "test-user".into(),
             password: "密码".into(),
             iface_mode: "manual".into(),
-            iface: "nactest0".into(),
+            iface: platform::adapters()
+                .unwrap()
+                .into_iter()
+                .find(|a| a.name == "nactest0")
+                .unwrap()
+                .id,
             ..Config::default()
         },
     )
@@ -251,11 +258,16 @@ fn isolated_resume_reauthenticates_without_gui_or_link_change() {
         .unwrap()
         .unwrap();
         assert_eq!(md5, expected);
+        let verification_started = Instant::now();
         session
             .capture
             .send(&success(server.mac, client.mac, 8))
             .unwrap();
         assert!(wait_state(&updates_rx, State::Authenticated).internet);
+        assert!(
+            verification_started.elapsed() < Duration::from_secs(5),
+            "reachable network must not incur a fixed five-second wait"
+        );
     }
     // External config changes are reconciled without asking the GUI to reload.
     let mut changed: Config = config::read(&dir.join("config.json")).unwrap();
@@ -368,7 +380,12 @@ fn isolated_service_authentication_and_renewal() {
         username: "test-user".into(),
         password: "密码".into(),
         iface_mode: "manual".into(),
-        iface: "nactest0".into(),
+        iface: platform::adapters()
+            .unwrap()
+            .into_iter()
+            .find(|a| a.name == "nactest0")
+            .unwrap()
+            .id,
         ..Config::default()
     };
     config::save(&paths, &cfg).unwrap();
@@ -442,11 +459,12 @@ fn isolated_service_authentication_and_renewal() {
     .unwrap()
     .unwrap();
     assert_eq!(md5, expected);
+    let verification_started = Instant::now();
     session
         .capture
         .send(&success(server.mac, client.mac, 8))
         .unwrap();
-    // Renewal requests must be answered during the five-second Internet check.
+    // Renewal requests must be answered while the Internet check completes.
     session
         .capture
         .send(&request(server.mac, client.mac, 9, 1, &[]))
@@ -472,6 +490,10 @@ fn isolated_service_authentication_and_renewal() {
         }
     }
     assert!(authenticated, "reachability check did not complete");
+    assert!(
+        verification_started.elapsed() < Duration::from_secs(5),
+        "first reachable probe was delayed"
+    );
     // Multiple online renewal handshakes reuse the existing capture session.
     for id in 11..14 {
         session
@@ -522,6 +544,7 @@ fn isolated_service_authentication_and_renewal() {
     // A genuine rejection, unlike an absent Success, must reconnect without
     // an Authenticate request from the GUI or a physical link change.
     while rx.try_recv().is_ok() {}
+    let recovery_started = Instant::now();
     let mut failure = success(server.mac, client.mac, 14);
     failure[18] = 4;
     session.capture.send(&failure).unwrap();
@@ -554,6 +577,10 @@ fn isolated_service_authentication_and_renewal() {
     }
     let response = ipc::request(&paths, Action::Status).unwrap();
     assert_eq!(response.data["state"], "authenticated");
+    assert!(
+        recovery_started.elapsed() < Duration::from_secs(5),
+        "automatic recovery exceeded notification debounce on the ready test network"
+    );
     assert_eq!(config_before, std::fs::read(&paths.config).unwrap());
     // Repeatedly reopening a watcher must release slots even without state changes.
     for id in 20..52 {
@@ -599,12 +626,50 @@ fn isolated_service_authentication_and_renewal() {
     ipc::request(&paths, Action::Logoff).unwrap();
     let s = ipc::request(&paths, Action::Status).unwrap();
     assert_eq!(s.data["state"], "idle");
-    // Down/up invalidates the old session and makes authentication available again.
+    // A deliberate disconnect survives both link changes and an interface rename.
     ip(&["link", "set", "nactest0", "down"]);
     std::thread::sleep(Duration::from_millis(100));
-    ip(&["link", "set", "nactest0", "up"]);
-    std::thread::sleep(Duration::from_millis(150));
-    assert!(ipc::request(&paths, Action::Status).is_ok());
+    ip(&["link", "set", "nactest0", "name", "nactest1"]);
+    ip(&["link", "set", "nactest1", "up"]);
+    std::thread::sleep(Duration::from_millis(5200));
+    let status = ipc::request(&paths, Action::Status).unwrap();
+    assert_eq!(status.data["state"], "idle");
+    assert_eq!(status.data["manual_disconnect"], true);
+    let renamed = platform::adapters()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.name == "nactest1")
+        .unwrap();
+    assert_eq!(renamed.id, client.id);
+    while rx.try_recv().is_ok() {}
+    let mut changed = cfg.clone();
+    changed.username = "replacement-user".into();
+    ipc::request(&paths, Action::Connect { config: changed }).unwrap();
+    recv_start(&rx, client.mac);
+    session
+        .capture
+        .send(&request(server.mac, client.mac, 60, 1, &[]))
+        .unwrap();
+    assert_eq!(
+        protocol::parse(&recv(&rx, 2, Some(1))).unwrap().data,
+        b"replacement-user"
+    );
+    session
+        .capture
+        .send(&success(server.mac, client.mac, 60))
+        .unwrap();
+    let end = Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = ipc::request(&paths, Action::Status).unwrap();
+        if status.data["state"] == "authenticated" {
+            break;
+        }
+        assert!(
+            Instant::now() < end,
+            "saved selection did not reconnect after rename"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let result = Command::new(env!("CARGO_BIN_EXE_sysu_netauth"))
         .args(["--data-dir", dir.to_str().unwrap(), "--json", "status"])
         .output()
@@ -617,5 +682,64 @@ fn isolated_service_authentication_and_renewal() {
         libc::kill(child.0.id() as i32, libc::SIGTERM);
     }
     assert!(child.0.wait().unwrap().success());
+    // Direct CLI uses the same handshake and immediate connectivity probe.
+    while rx.try_recv().is_ok() {}
+    let mut direct = ChildGuard(
+        Command::new(env!("CARGO_BIN_EXE_sysu_netauth"))
+            .args([
+                "--data-dir",
+                dir.to_str().unwrap(),
+                "--json",
+                "authenticate",
+                "--iface",
+                "nactest1",
+                "--username",
+                "test-user",
+                "--password",
+                "password",
+                "--timeout",
+                "5",
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    recv_start(&rx, client.mac);
+    session
+        .capture
+        .send(&request([4; 6], client.mac, 70, 25, &[]))
+        .unwrap();
+    session
+        .capture
+        .send(&request(server.mac, client.mac, 71, 1, &[]))
+        .unwrap();
+    assert_eq!(
+        protocol::parse(&recv(&rx, 2, Some(1))).unwrap().data,
+        b"test-user"
+    );
+    let challenge_packet = request(server.mac, client.mac, 72, 4, &challenge);
+    session.capture.send(&challenge_packet).unwrap();
+    let response = recv(&rx, 2, Some(4));
+    assert_eq!(
+        response,
+        protocol::answer(
+            client.mac,
+            server.mac,
+            &protocol::parse(&challenge_packet).unwrap(),
+            b"test-user",
+            b"password"
+        )
+        .unwrap()
+        .unwrap()
+    );
+    session
+        .capture
+        .send(&success(server.mac, client.mac, 72))
+        .unwrap();
+    assert!(direct.0.wait().unwrap().success());
+    let mut output = String::new();
+    std::io::Read::read_to_string(&mut direct.0.stdout.take().unwrap(), &mut output).unwrap();
+    let status: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(status["state"], "authenticated");
     std::fs::remove_dir_all(dir).unwrap();
 }

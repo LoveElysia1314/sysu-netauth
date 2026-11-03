@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from test_release_version import versioning
+from test_release_version import versioning, set_package_version
 
 ROOT = Path(__file__).resolve().parent.parent
 RUST_VERSION = "1.2.3"
@@ -42,6 +42,7 @@ class WindowsPackagingTests(unittest.TestCase):
             destination = self.root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / relative, destination)
+        set_package_version(self.root, "1.2.3")
         self.root_patch = patch.object(packaging, "ROOT", self.root)
         self.root_patch.start()
         self.addCleanup(self.root_patch.stop)
@@ -106,6 +107,7 @@ class WindowsPackagingTests(unittest.TestCase):
     def test_one_prerelease_tag_drives_all_installers_and_checks_artifact_identity(self):
         subprocess.run(["git", "-C", str(self.root), "tag", "-d", "v1.2.3"], check=True, stdout=subprocess.DEVNULL)
         subprocess.run(["git", "-C", str(self.root), "tag", "v0.7.0-alpha.0"], check=True)
+        set_package_version(self.root, "0.7.0-alpha.0")
         info = versioning.resolve(self.root, "v0.7.0-alpha.0")
         versioning.stamp(self.root, info)
         (self.source / "release-version.json").write_text(json.dumps(info), encoding="utf-8")

@@ -934,19 +934,12 @@ impl Window {
                 },
                 UiEvent::Reply(id, result) => match result {
                     Err(e) => {
-                        if id == CONNECT || id == 999 {
+                        if id == CONNECT {
                             self.state_notifications.cancel_connect_request();
                         }
                         platform::show_error(&e);
                     }
                     Ok(response) => {
-                        if !response.ok {
-                            if id == CONNECT || id == 999 {
-                                self.state_notifications.cancel_connect_request();
-                            }
-                            platform::show_error(response.error.as_deref().unwrap_or("操作失败"));
-                            continue;
-                        }
                         if id == 1 {
                             match serde_json::from_value(response.data) {
                                 Ok(c) => {
@@ -955,11 +948,7 @@ impl Window {
                                 }
                                 Err(e) => platform::show_error(&e.to_string()),
                             }
-                        } else if id == SAVE || id == CONNECT {
-                            if id == CONNECT && !self.task(Task::Request(999, Action::Authenticate))
-                            {
-                                self.state_notifications.cancel_connect_request();
-                            }
+                        } else if id == SAVE {
                             set_text(self.status, "设置已保存");
                         }
                     }
@@ -975,7 +964,12 @@ impl Window {
                     if id == CONNECT {
                         self.state_notifications.connect_requested();
                     }
-                    if !self.task(Task::Request(id, Action::SetConfig { config })) {
+                    let action = if id == CONNECT {
+                        Action::Connect { config }
+                    } else {
+                        Action::SetConfig { config }
+                    };
+                    if !self.task(Task::Request(id, action)) {
                         self.state_notifications.cancel_connect_request();
                     }
                     self.schedule_notice();
@@ -1324,16 +1318,15 @@ pub fn run() -> Result<()> {
             for task in rx {
                 match task {
                     Task::Request(id, action) => {
-                        let login = if let Action::SetConfig { config } = &action {
-                            Some(config.launch_gui_on_login)
-                        } else {
-                            None
+                        let login = match &action {
+                            Action::SetConfig { config } | Action::Connect { config } => {
+                                Some(config.launch_gui_on_login)
+                            }
+                            _ => None,
                         };
                         let result = ipc::request(&Paths::default(), action).and_then(|response| {
-                            if response.ok {
-                                if let Some(enabled) = login {
-                                    platform::set_login_task(enabled)?;
-                                }
+                            if let Some(enabled) = login {
+                                platform::set_login_task(enabled)?;
                             }
                             Ok(response)
                         });

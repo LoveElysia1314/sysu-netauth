@@ -44,15 +44,17 @@ sysu_netauth logoff --iface eth0
 | --- | --- | --- |
 | `username`, `password` | 空 | NetID 和密码，需可编码为 GBK |
 | `iface_mode` | `auto` | `auto` 自动选择，`manual` 固定网卡 |
-| `iface` | 空 | 网卡名称或设备 ID；Windows 界面保存设备 ID |
+| `iface` | 空 | `interfaces --json` 返回的设备 ID；Windows 为系统设备 ID，Linux/macOS 为 MAC 地址 |
 | `auto_auth` | `true` | 自动认证及失败重试 |
-| `retry_interval` | `60` | 常规重试间隔，范围为 15–3600 秒 |
+| `retry_interval` | `60` | 失败重试间隔的上限，范围为 15–3600 秒 |
 | `service_mode` | `true` | Windows 服务独立运行 |
 | `launch_gui_on_login` | `false` | Windows 登录时启动界面 |
 | `hide_window_on_login` | `true` | 登录启动时隐藏窗口 |
 | `desktop_notify` | `true` | Windows 托盘通知 |
 
 未指定的字段使用默认值。设置包含明文凭据，应限制文件访问权限。
+
+自动认证失败后，按 3、6、12、24 秒逐步延长重试间隔，直到达到 `retry_interval`；网络故障不会因累计次数过多而永久停止恢复。凭据不完整等配置问题等待设置修正，未连接的网卡等待网络事件。手动断开在当前服务运行期间保持，插拔和唤醒不改变此选择；重新启动服务时按自动认证设置执行。
 
 ## 更新规则
 

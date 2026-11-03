@@ -1,7 +1,9 @@
 use crate::{
+    authentication::{self, Exchange},
     config::{self, Cache, Config, Paths},
+    connectivity::Probe,
     ipc::{Action, Call, Response, Subscription},
-    platform::{self, Adapter, Cancel, Session},
+    platform::{self, Adapter, Session},
     protocol,
     update::{self, Update},
 };
@@ -104,19 +106,6 @@ pub struct Snapshot {
     pub update: Update,
 }
 
-struct Probe {
-    stop: Arc<Cancel>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-impl Drop for Probe {
-    fn drop(&mut self) {
-        self.stop.set();
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
-    }
-}
-
 pub struct Engine {
     pub config: Config,
     pub snapshot: Snapshot,
@@ -127,8 +116,6 @@ pub struct Engine {
     network: Arc<Signal>,
     stop: Arc<Signal>,
     suspended: bool,
-    recovering_resume: bool,
-    preserve_manual_disconnect: bool,
     pub generation: u64,
     session: Option<Session>,
     probe: Option<Probe>,
@@ -139,9 +126,7 @@ pub struct Engine {
     peer: Option<[u8; 6]>,
     manual_disconnect: bool,
     retry: Option<Instant>,
-    retries: u32,
-    startup: Instant,
-    startup_retry: usize,
+    retry_attempt: u32,
     handshake_deadline: Option<Instant>,
     start_deadline: Option<Instant>,
     subscribers: Vec<Subscription>,
@@ -203,8 +188,6 @@ impl Engine {
             stop: Arc::new(Signal::new(events.clone(), || Event::Stop)),
             events,
             suspended: false,
-            recovering_resume: false,
-            preserve_manual_disconnect: false,
             generation: 0,
             session: None,
             probe: None,
@@ -215,9 +198,7 @@ impl Engine {
             peer: None,
             manual_disconnect: false,
             retry: None,
-            retries: 0,
-            startup: now + Duration::from_secs(60),
-            startup_retry: 0,
+            retry_attempt: 0,
             handshake_deadline: None,
             start_deadline: None,
             subscribers: Vec::new(),
@@ -317,13 +298,11 @@ impl Engine {
         let Some(event) = self.power.take() else {
             return;
         };
-        // Resume also invalidates when the suspend notification was not observed.
         self.invalidate();
         self.candidates.clear();
         self.snapshot.adapter = None;
         self.retry = None;
-        self.preserve_manual_disconnect |= self.manual_disconnect;
-        self.recovering_resume = false;
+        self.retry_attempt = 0;
         match event {
             PowerEvent::Suspend => {
                 self.suspended = true;
@@ -331,11 +310,7 @@ impl Engine {
             }
             PowerEvent::Resume => {
                 self.suspended = false;
-                self.retries = 0;
-                self.startup_retry = 0;
-                self.startup = Instant::now() + Duration::from_secs(120);
                 if self.config.auto_auth && !self.manual_disconnect {
-                    self.recovering_resume = true;
                     self.retry = Some(Instant::now() + Duration::from_secs(2));
                     self.status(State::Idle, "系统已恢复，等待网卡就绪后重新认证");
                 } else {
@@ -370,28 +345,17 @@ impl Engine {
         let mut available: Vec<_> = self
             .adapters
             .iter()
-            .filter(|a| a.candidate())
+            .filter(|a| {
+                a.candidate() && (self.config.iface_mode != "manual" || a.id == self.config.iface)
+            })
             .cloned()
             .collect();
-        if self.config.iface_mode == "manual" {
-            available.retain(|a| {
-                a.name == self.config.iface
-                    || a.id == self.config.iface
-                    || (!self.cache.last_success_mac.is_empty()
-                        && protocol::mac_text(a.mac) == self.cache.last_success_mac
-                        && (self.config.iface == self.cache.iface
-                            || self.config.iface == self.cache.manual_selector))
-            });
-            available.truncate(1);
-        } else {
-            available.sort_by_key(|a| {
-                (
-                    std::cmp::Reverse(protocol::mac_text(a.mac) == self.cache.last_success_mac),
-                    std::cmp::Reverse(a.name == self.cache.iface),
-                    std::cmp::Reverse(a.score),
-                )
-            });
-        }
+        available.sort_by_key(|a| {
+            (
+                std::cmp::Reverse(a.id == self.cache.last_success_id),
+                std::cmp::Reverse(a.score),
+            )
+        });
         available
     }
     fn authenticate(&mut self) -> Result<()> {
@@ -399,15 +363,7 @@ impl Engine {
         self.retry = None;
         self.invalidate();
         self.candidates.clear();
-        self.config.validate()?;
-        ensure!(
-            !self.config.username.is_empty() && !self.config.password.is_empty(),
-            "需要配置 NetID 和密码"
-        );
-        ensure!(
-            self.config.iface_mode != "manual" || !self.config.iface.is_empty(),
-            "请选择网卡"
-        );
+        self.config.validate_auth()?;
         self.username = protocol::gbk(&self.config.username)?;
         self.password = protocol::gbk(&self.config.password)?;
         self.refresh_adapters()?;
@@ -418,11 +374,6 @@ impl Engine {
         self.invalidate();
         if self.candidates.is_empty() {
             self.snapshot.adapter = None;
-            if self.recovering_resume && Instant::now() < self.startup {
-                self.failed("等待已连接的有线网卡");
-                return Ok(());
-            }
-            self.recovering_resume = false;
             self.status(State::Idle, "等待已连接的有线网卡");
             return Ok(());
         }
@@ -446,40 +397,31 @@ impl Engine {
     }
     fn failed(&mut self, message: &str) {
         let mut message = message.to_owned();
-        let was_online = self.snapshot.state == State::Authenticated;
+        if self.snapshot.state == State::Authenticated {
+            self.retry_attempt = 0;
+            self.candidates.clear();
+        }
         self.retry = None;
         self.invalidate();
-        if was_online {
-            // A lost established session deserves prompt recovery on the saved
-            // adapter, rather than an old candidate queue or a full retry interval.
-            self.candidates.clear();
-            self.retries = 0;
-            self.startup_retry = 0;
-            self.startup = Instant::now() + Duration::from_secs(60);
-        }
         if !self.candidates.is_empty() {
             match self.next_candidate() {
                 Ok(()) => return,
-                Err(e) => message = e.to_string(),
+                Err(error) => message = error.to_string(),
             }
         }
-        if self.manual_disconnect || !self.config.auto_auth {
-            self.recovering_resume = false;
+        if self.manual_disconnect
+            || self.suspended
+            || !self.config.auto_auth
+            || self.config.validate_auth().is_err()
+        {
             self.status(State::Failed, message);
             return;
         }
-        if Instant::now() < self.startup {
-            let delay = [3, 5, 8, 13, 21][self.startup_retry.min(4)];
-            self.startup_retry += 1;
-            self.retry = Some(Instant::now() + Duration::from_secs(delay));
-        } else if self.retries < 5 {
-            self.retries += 1;
-            self.retry = Some(Instant::now() + Duration::from_secs(self.config.retry_interval));
-        } else {
-            self.recovering_resume = false;
-            self.status(State::Failed, "多次认证失败，请检查 NetID 或网络");
-            return;
-        }
+        let delay = 3u64
+            .saturating_mul(1u64 << self.retry_attempt.min(12))
+            .min(self.config.retry_interval);
+        self.retry_attempt = self.retry_attempt.saturating_add(1);
+        self.retry = Some(Instant::now() + Duration::from_secs(delay));
         self.status(State::Idle, format!("{message}，等待重试"));
     }
     fn packet(&mut self, generation: u64, raw: &[u8]) -> Result<()> {
@@ -492,39 +434,22 @@ impl Engine {
         let Some(packet) = protocol::parse(raw) else {
             return Ok(());
         };
-        if packet.source == adapter.mac
-            || packet.source == [0; 6]
-            || packet.source[0] & 1 != 0
-            || (packet.destination != adapter.mac && packet.destination != protocol::PAE)
-        {
-            return Ok(());
-        }
-        let peer_changed = self.peer.is_some_and(|peer| peer != packet.source);
         let online = self.snapshot.state == State::Authenticated || self.probe.is_some();
-        // A switch can change its EAP source during online reauthentication.
-        // Adopt it only after answering a valid Request, never on an unsolicited
-        // Success/Failure from another source.
-        if (peer_changed && !(online && packet.code == 1))
-            || (self.peer.is_none() && packet.code != 1)
-        {
-            return Ok(());
-        }
-        if packet.code == 1 {
-            let destination = if online { protocol::PAE } else { packet.source };
-            let response = protocol::answer(
-                adapter.mac,
-                destination,
-                &packet,
-                &self.username,
-                &self.password,
-            );
-            let response = match response {
-                Err(_) if peer_changed => return Ok(()),
-                other => other?,
-            };
-            if let Some(response) = response {
+        match authentication::receive(
+            &mut self.peer,
+            adapter.mac,
+            &packet,
+            &self.username,
+            &self.password,
+            online,
+        )? {
+            Exchange::Ignore => {}
+            Exchange::Response {
+                bytes,
+                peer_changed,
+            } => {
                 if let Some(session) = &self.session {
-                    session.capture.send(&response)?;
+                    session.capture.send(&bytes)?;
                 }
                 if peer_changed {
                     crate::diagnostics::record(
@@ -535,56 +460,18 @@ impl Engine {
                         ),
                     );
                 }
-                self.peer = Some(packet.source);
                 self.start_deadline = None;
-                // Online requests are keepalives as well as full reauthentication.
-                // Keep answering without requiring a terminal Success for each
-                // probe. Only the initial handshake
-                // has a deadline; an explicit Failure still restarts authentication.
             }
-        } else if packet.code == 3 {
-            self.handshake_deadline = None;
-            self.start_deadline = None;
-            if self.snapshot.state == State::Authenticated {
-                return Ok(());
+            Exchange::Success => {
+                self.handshake_deadline = None;
+                self.start_deadline = None;
+                if self.snapshot.state != State::Authenticated && self.probe.is_none() {
+                    self.status(State::Authenticating, "已完成 EAP，验证互联网连通性");
+                    self.probe = Some(Probe::start(self.events.clone(), self.generation)?);
+                }
             }
-            if self.probe.is_none() {
-                self.start_connectivity()?;
-            }
-        } else if packet.code == 4 {
-            self.failed("EAP 认证失败");
+            Exchange::Failure => self.failed("EAP 认证失败"),
         }
-        Ok(())
-    }
-    fn start_connectivity(&mut self) -> Result<()> {
-        self.status(State::Authenticating, "已完成 EAP，验证互联网连通性");
-        let stop = Arc::new(Cancel::new()?);
-        let cancel = stop.clone();
-        let tx = self.events.clone();
-        let generation = self.generation;
-        let thread = std::thread::Builder::new()
-            .name("reachability-check".into())
-            .spawn(move || {
-                if !platform::cancellable_wait(&cancel, Duration::from_secs(5)) {
-                    return;
-                }
-                for round in 0..3 {
-                    for target in [[119, 29, 29, 29], [114, 114, 114, 114]] {
-                        if platform::ping(target.into(), &cancel) {
-                            platform::deliver(&tx, Event::Connectivity(generation, true), &cancel);
-                            return;
-                        }
-                    }
-                    if round < 2 && !platform::cancellable_wait(&cancel, Duration::from_secs(10)) {
-                        return;
-                    }
-                }
-                platform::deliver(&tx, Event::Connectivity(generation, false), &cancel);
-            })?;
-        self.probe = Some(Probe {
-            stop,
-            thread: Some(thread),
-        });
         Ok(())
     }
     fn network_changed(&mut self) -> Result<()> {
@@ -603,15 +490,7 @@ impl Engine {
         }
         let current_media = self.adapters.iter().any(Adapter::candidate);
         if !previous_media && current_media {
-            if !self.preserve_manual_disconnect {
-                self.manual_disconnect = false;
-            }
-            self.retries = 0;
-        }
-        // Link/address notifications during NIC initialization must not bypass
-        // the resume settling delay or its bounded driver-recovery backoff.
-        if self.recovering_resume && self.retry.is_some() {
-            return Ok(());
+            self.retry_attempt = 0;
         }
         if let Some(active) = &self.snapshot.adapter {
             if let Some(updated) = self
@@ -637,7 +516,7 @@ impl Engine {
             && !self.manual_disconnect
             && self.session.is_none()
             && self.retry.is_none()
-            && (self.retries < 5 || Instant::now() < self.startup)
+            && self.config.validate_auth().is_ok()
         {
             self.authenticate()?;
         }
@@ -679,15 +558,7 @@ impl Engine {
                 }
                 Action::GetConfig => Ok(serde_json::to_value(&self.config)?),
                 Action::Authenticate => {
-                    ensure!(!self.suspended, "系统休眠中");
-                    self.manual_disconnect = false;
-                    self.preserve_manual_disconnect = false;
-                    self.recovering_resume = false;
-                    self.retries = 0;
-                    if let Err(e) = self.authenticate() {
-                        self.status(State::Failed, e.to_string());
-                        return Err(e);
-                    }
+                    self.connect()?;
                     Ok(serde_json::to_value(&self.snapshot)?)
                 }
                 Action::Logoff => {
@@ -695,14 +566,13 @@ impl Engine {
                     Ok(serde_json::to_value(&self.snapshot)?)
                 }
                 Action::SetConfig { config } => {
-                    config.validate()?;
-                    config::save(&self.paths, &config)?;
-                    #[cfg(windows)]
-                    if config.service_mode != self.config.service_mode {
-                        platform::configure_service(config.service_mode)?;
-                    }
-                    self.apply_config(config)?;
+                    self.save_config(config, false)?;
                     Ok(serde_json::json!({"saved":true}))
+                }
+                Action::Connect { config } => {
+                    ensure!(!self.suspended, "系统休眠中");
+                    self.save_config(config, true)?;
+                    Ok(serde_json::to_value(&self.snapshot)?)
                 }
                 Action::ReloadConfig => {
                     let config = config::load(&self.paths)?;
@@ -729,38 +599,60 @@ impl Engine {
             }
         }
     }
+    fn save_config(&mut self, config: Config, connect: bool) -> Result<()> {
+        config.validate()?;
+        config::save(&self.paths, &config)?;
+        #[cfg(windows)]
+        if config.service_mode != self.config.service_mode {
+            platform::configure_service(config.service_mode)?;
+        }
+        if connect {
+            // Apply settings without its automatic reconnect path, then start once.
+            self.config = config;
+            self.connect()
+        } else {
+            self.apply_config(config)
+        }
+    }
+    fn connect(&mut self) -> Result<()> {
+        ensure!(!self.suspended, "系统休眠中");
+        self.manual_disconnect = false;
+        self.retry_attempt = 0;
+        self.authenticate()
+            .inspect_err(|error| self.status(State::Failed, error.to_string()))
+    }
     fn apply_config(&mut self, config: Config) -> Result<()> {
-        let credentials_changed = self.config.username != config.username
+        let changed = self.config.username != config.username
             || self.config.password != config.password
             || self.config.iface != config.iface
             || self.config.iface_mode != config.iface_mode;
         let enabled = !self.config.auto_auth && config.auto_auth;
         self.config = config;
+        if enabled {
+            self.retry_attempt = 0;
+        }
         if !self.config.auto_auth {
             self.retry = None;
-            self.recovering_resume = false;
         }
-        if credentials_changed {
+        if changed {
             self.invalidate();
+            self.retry = None;
+            self.retry_attempt = 0;
             self.status(State::Idle, "认证配置已更改");
         }
-        if (credentials_changed || (enabled && self.snapshot.state != State::Authenticated))
+        if (changed || (enabled && self.snapshot.state != State::Authenticated))
             && self.config.auto_auth
             && !self.manual_disconnect
             && !self.suspended
         {
-            if self.recovering_resume {
-                self.retry = Some(Instant::now() + Duration::from_secs(2));
-            } else if let Err(e) = self.authenticate() {
-                self.status(State::Failed, e.to_string());
+            if let Err(error) = self.authenticate() {
+                self.failed(&error.to_string());
             }
         }
         Ok(())
     }
     fn logoff(&mut self) -> Result<()> {
         self.manual_disconnect = true;
-        self.preserve_manual_disconnect |= self.suspended || self.recovering_resume;
-        self.recovering_resume = false;
         self.retry = None;
         self.candidates.clear();
         let sent = if let (Some(session), Some(adapter)) = (&self.session, &self.snapshot.adapter) {
@@ -865,17 +757,12 @@ impl Engine {
             Event::Connectivity(g, success) if g == self.generation => {
                 self.probe = None;
                 if success {
-                    self.recovering_resume = false;
                     self.candidates.clear();
-                    self.retries = 0;
+                    self.retry_attempt = 0;
                     self.retry = None;
-                    self.startup = Instant::now();
-                    self.startup_retry = 0;
                     if let Some(adapter) = &self.snapshot.adapter {
                         self.cache = Cache {
-                            iface: adapter.name.clone(),
-                            last_success_mac: protocol::mac_text(adapter.mac),
-                            manual_selector: self.config.iface.clone(),
+                            last_success_id: adapter.id.clone(),
                         };
                         if let Err(e) = config::atomic_write(
                             &self.paths.state.join("service_cache.json"),
@@ -938,7 +825,7 @@ impl Engine {
             return;
         }
         self.drain_power();
-        if !self.suspended && !self.recovering_resume {
+        if !self.suspended && self.retry.is_none() {
             self.start();
         }
         loop {
@@ -1117,7 +1004,7 @@ mod tests {
                 ..Adapter::default()
             },
         ];
-        e.cache.last_success_mac = protocol::mac_text([2; 6]);
+        e.cache.last_success_id = "saved".into();
         assert_eq!(e.select()[0].name, "saved");
         e.config.iface_mode = "manual".into();
         e.config.iface = "new".into();
@@ -1125,17 +1012,20 @@ mod tests {
         assert_eq!(e.select()[0].name, "new");
     }
     #[test]
-    fn retry_exhaustion_and_no_auto_auth() {
-        let mut e = engine();
-        e.startup = Instant::now();
-        e.retries = 5;
-        e.failed("rejected");
-        assert_eq!(e.snapshot.state, State::Failed);
-        assert!(e.retry.is_none());
-        e.retries = 0;
+    fn retries_back_off_to_the_configured_cap_without_permanent_exhaustion() {
+        let mut e = online();
+        e.snapshot.state = State::Authenticating;
+        for expected in [3, 6, 12, 24, 48, 60, 60, 60, 60, 60] {
+            let before = Instant::now();
+            e.failed("temporary network failure");
+            let delay = e.retry.unwrap().duration_since(before);
+            assert!(delay >= Duration::from_secs(expected));
+            assert!(delay < Duration::from_secs(expected + 1));
+        }
         e.config.auto_auth = false;
-        e.failed("rejected");
+        e.failed("temporary network failure");
         assert!(e.retry.is_none());
+        assert_eq!(e.snapshot.state, State::Failed);
     }
     #[test]
     fn slow_subscriber_is_dropped() {
@@ -1151,6 +1041,8 @@ mod tests {
     }
     fn online() -> Engine {
         let mut e = engine();
+        e.config.username = "user".into();
+        e.config.password = "password".into();
         e.snapshot.state = State::Authenticated;
         e.snapshot.internet = true;
         e.snapshot.authenticated_at = Some(1);
@@ -1254,35 +1146,27 @@ mod tests {
         assert!(e.retry.is_some());
     }
     #[test]
-    fn automatic_retry_errors_keep_the_retry_schedule_without_gui() {
+    fn local_configuration_errors_wait_for_correction_instead_of_retrying() {
         let mut e = online();
-        e.snapshot.state = State::Authenticating;
-        e.startup = Instant::now();
+        e.config.password.clear();
+        e.failed("missing password");
+        assert_eq!(e.snapshot.state, State::Failed);
+        assert!(e.retry.is_none());
+        e.config.password = "password".into();
         e.failed("capture temporarily unavailable");
-        assert_eq!(e.retries, 1);
-        e.retry = Some(Instant::now());
-        // Missing configured credentials exercise authenticate's early-error
-        // path without opening a real capture handle on the test host.
-        e.tick();
-        assert_eq!(e.snapshot.state, State::Idle);
-        assert_eq!(e.retries, 2);
         assert!(e.retry.is_some());
-        assert!(e.session.is_none());
         e.logoff().unwrap();
-        e.tick();
         assert!(e.retry.is_none());
     }
     #[test]
     fn lost_established_session_recovers_promptly_without_stale_candidates() {
         let mut e = online();
-        e.startup = Instant::now();
-        e.retries = 5;
+        e.retry_attempt = 100;
         e.candidates.push(Adapter::default());
         e.failed("EAP session lost");
         assert_eq!(e.snapshot.state, State::Idle);
         assert!(e.candidates.is_empty());
-        assert_eq!(e.retries, 0);
-        assert_eq!(e.startup_retry, 1);
+        assert_eq!(e.retry_attempt, 1);
         assert!(e.retry.unwrap() <= Instant::now() + Duration::from_secs(3));
     }
     #[test]
@@ -1295,25 +1179,22 @@ mod tests {
         assert!(e.retry.is_some());
     }
     #[test]
-    fn manual_adapter_can_be_renamed_more_than_once() {
+    fn manual_selection_uses_only_device_identity_across_renames() {
         let mut e = engine();
         e.config.iface_mode = "manual".into();
-        e.config.iface = "original".into();
-        e.cache = Cache {
-            iface: "previous-name".into(),
-            last_success_mac: protocol::mac_text([2; 6]),
-            manual_selector: "original".into(),
-        };
+        e.config.iface = "device-id".into();
         e.adapters = vec![Adapter {
-            name: "current-name".into(),
-            id: "id".into(),
+            id: "device-id".into(),
+            name: "renamed twice".into(),
             mac: [2; 6],
             up: true,
             ethernet: true,
             ..Adapter::default()
         }];
-        assert_eq!(e.select()[0].name, "current-name");
-        e.config.iface = "different-adapter".into();
+        assert_eq!(e.select()[0].name, "renamed twice");
+        e.adapters[0].id = "another-device".into();
+        e.adapters[0].name = "device-id".into();
+        e.cache.last_success_id = "another-device".into();
         assert!(e.select().is_empty());
     }
     #[test]
@@ -1381,77 +1262,62 @@ mod tests {
         assert!(e.retry.is_none());
     }
     #[test]
-    fn resume_without_suspend_resets_session_and_restarts_grace() {
+    fn resume_without_suspend_invalidates_old_work_and_uses_the_same_retry_policy() {
         let mut e = online();
         let old = e.generation;
-        e.retries = 5;
-        e.startup = Instant::now();
+        e.retry_attempt = 100;
         e.power.notify(PowerEvent::Resume);
         e.handle(Event::Connectivity(old, true));
         assert!(!e.snapshot.internet);
         assert!(e.snapshot.adapter.is_none());
         assert!(!e.suspended);
-        assert!(e.recovering_resume);
-        assert_eq!(e.retries, 0);
-        assert!(e.startup > Instant::now() + Duration::from_secs(110));
+        assert_eq!(e.retry_attempt, 0);
         assert!(e.retry.unwrap() > Instant::now() + Duration::from_secs(1));
-        // A temporary capture/driver error must retain recovery, rather than
-        // terminating it until the GUI sends another Authenticate command.
-        e.failed("capture driver not ready");
+        e.failed("driver not ready");
+        assert_eq!(e.retry_attempt, 1);
         assert!(e.retry.is_some());
-        e.retry = Some(Instant::now());
-        // Missing credentials deliberately exercise an early authenticate error.
-        e.tick();
-        assert!(e.retry.is_some());
-        assert_eq!(e.snapshot.state, State::Idle);
     }
     #[test]
-    fn resume_adapter_wait_is_bounded_and_online_has_no_retry_timer() {
+    fn missing_adapters_wait_for_network_events_and_online_has_no_retry_timer() {
         let mut e = engine();
         e.power.notify(PowerEvent::Resume);
         e.handle(Event::PowerChanged);
         e.retry = None;
         e.next_candidate().unwrap();
-        assert!(e.retry.is_some());
-        e.startup = Instant::now();
-        e.retry = None;
-        e.next_candidate().unwrap();
+        assert_eq!(e.snapshot.state, State::Idle);
         assert!(e.retry.is_none());
-        assert!(!e.recovering_resume);
-        e.power.notify(PowerEvent::Resume);
-        e.handle(Event::PowerChanged);
         e.handle(Event::Connectivity(e.generation, true));
-        assert!(!e.recovering_resume);
         assert!(e.retry.is_none());
         assert!(e.handshake_deadline.is_none());
         assert!(e.start_deadline.is_none());
     }
     #[test]
-    fn resume_respects_manual_disconnect_and_auto_auth_setting() {
+    fn manual_disconnect_survives_network_changes_and_resume() {
         let mut e = online();
         e.logoff().unwrap();
+        e.adapters.clear();
+        e.network_changed().unwrap();
         e.power.notify(PowerEvent::Resume);
         e.handle(Event::PowerChanged);
+        e.network_changed().unwrap();
         assert!(e.manual_disconnect);
-        assert!(e.preserve_manual_disconnect);
+        assert!(e.snapshot.manual_disconnect);
         assert!(e.retry.is_none());
         e = online();
         e.config.auto_auth = false;
         e.power.notify(PowerEvent::Resume);
         e.handle(Event::PowerChanged);
-        assert!(!e.recovering_resume);
         assert!(e.retry.is_none());
         assert!(!e.snapshot.internet);
     }
     #[test]
-    fn logoff_or_disabling_auto_auth_cancels_resume_recovery() {
-        let mut e = engine();
+    fn logoff_or_disabling_auto_auth_cancels_scheduled_recovery() {
+        let mut e = online();
         e.power.notify(PowerEvent::Resume);
         e.handle(Event::PowerChanged);
         e.logoff().unwrap();
         assert!(e.retry.is_none());
-        assert!(!e.recovering_resume);
-        assert!(e.preserve_manual_disconnect);
+        assert!(e.manual_disconnect);
         e.manual_disconnect = false;
         e.power.notify(PowerEvent::Resume);
         e.handle(Event::PowerChanged);
@@ -1459,6 +1325,28 @@ mod tests {
         config.auto_auth = false;
         e.apply_config(config).unwrap();
         assert!(e.retry.is_none());
-        assert!(!e.recovering_resume);
+    }
+    #[test]
+    fn saving_and_connecting_starts_exactly_one_authentication() {
+        let mut e = engine();
+        let config = Config {
+            username: "example-user".into(),
+            password: "example-password".into(),
+            iface_mode: "manual".into(),
+            iface: "nonexistent-test-device".into(),
+            ..Config::default()
+        };
+        e.save_config(config.clone(), true).unwrap();
+        assert_eq!(e.generation, 2);
+        assert!(!e.manual_disconnect);
+        assert_eq!(e.config, config);
+        e.reload_changed_config();
+        assert_eq!(e.generation, 2);
+        e.logoff().unwrap();
+        assert!(e.manual_disconnect);
+        e.save_config(e.config.clone(), true).unwrap();
+        assert!(!e.manual_disconnect);
+        assert_eq!(e.generation, 5);
+        std::fs::remove_dir_all(&e.paths.state).unwrap();
     }
 }

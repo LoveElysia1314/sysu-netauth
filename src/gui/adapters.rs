@@ -17,9 +17,7 @@ pub(super) fn refresh(all: &[Adapter], selected: Option<&Adapter>) -> Vec<Adapte
 }
 
 pub(super) fn selection(items: &[Adapter], preferred: &str) -> Option<usize> {
-    items
-        .iter()
-        .position(|a| a.id == preferred || a.name == preferred)
+    items.iter().position(|a| a.id == preferred)
 }
 
 #[cfg(test)]
