@@ -36,6 +36,7 @@ class WindowsPackagingTests(unittest.TestCase):
             "scripts/npcap.iss",
             "scripts/windows/process.iss",
             "scripts/windows/service.iss",
+            "scripts/windows/data.iss",
 
         ):
             destination = self.root / relative

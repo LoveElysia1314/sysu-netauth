@@ -94,6 +94,8 @@ pub enum State {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub state: State,
+    pub suspended: bool,
+    pub manual_disconnect: bool,
     pub message: String,
     pub adapter: Option<Adapter>,
     pub adapters: Vec<Adapter>,
@@ -182,6 +184,8 @@ impl Engine {
             config,
             snapshot: Snapshot {
                 state: State::Idle,
+                suspended: false,
+                manual_disconnect: false,
                 message: error.unwrap_or_else(|| "待命".into()),
                 adapter: None,
                 adapters: Vec::new(),
@@ -273,6 +277,8 @@ impl Engine {
         }
     }
     fn publish(&mut self) {
+        self.snapshot.suspended = self.suspended;
+        self.snapshot.manual_disconnect = self.manual_disconnect;
         self.subscribers.retain(|s| {
             let ok = s.alive.load(std::sync::atomic::Ordering::Relaxed)
                 && s.updates.try_send(Some(self.snapshot.clone())).is_ok();
@@ -1196,6 +1202,7 @@ mod tests {
         e.logoff().unwrap();
         e.handle(Event::Connectivity(old, true));
         assert!(e.manual_disconnect);
+        assert!(e.snapshot.manual_disconnect);
         assert_eq!(e.snapshot.state, State::Idle);
         assert!(!e.snapshot.internet);
         assert!(e.retry.is_none());
@@ -1358,6 +1365,7 @@ mod tests {
         e.handle(Event::CaptureError(old, "stale capture".into()));
         e.tick();
         assert!(e.suspended);
+        assert!(e.snapshot.suspended);
         assert_eq!(e.snapshot.state, State::Idle);
         assert!(!e.snapshot.internet);
         assert!(e.snapshot.authenticated_at.is_none());

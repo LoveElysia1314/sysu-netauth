@@ -240,6 +240,8 @@ fn direct(
                     }
                     if ok {
                         let s = Snapshot {
+                            suspended: false,
+                            manual_disconnect: false,
                             state: State::Authenticated,
                             message: "已认证，互联网连通".into(),
                             adapter: Some(adapter.clone()),
