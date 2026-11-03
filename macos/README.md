@@ -80,3 +80,9 @@ swift run --package-path macos -c release NetAuthIconPreview dist/menu-bar-icons
 ```
 
 离线检查现为 41 项，新增状态与 Windows 配色映射、未知状态及主动断开区别检查。Windows 现有托盘逻辑无需改变。
+
+## 跨平台资产维护
+
+图标几何与精确状态配色已统一收拢至 [`assets/icons/source.json`](../assets/icons/source.json)，Windows ICO、通用 SVG 和 macOS 嵌入数据均由该源生成。旧 `assets/icon-ethernet.*` 和 `tray-*.ico` 已移除；Windows 资源 ID 和状态映射不变，安装器改用新生成的应用图标。生成流程见[共享资产说明](../assets/icons/README.md)。
+
+资源一致性与 ICO 完整性检查（3 项）及既有 Windows 打包测试（9 项）在本机通过；macOS Release 编译通过。尚未在真实 Windows 桌面核对图标显示，交由 Windows CI/设备测试完成。此轮只整合源码与资产，没有覆盖当前已授权运行的应用包。

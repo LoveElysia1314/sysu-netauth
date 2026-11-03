@@ -1,62 +1,59 @@
 import AppKit
 import NetAuthCore
 
-/// Vector artwork tuned for an 18pt menu-bar slot. The shield keeps product identity;
-/// distinct centre marks remain readable without colour or animation.
+/// Both platforms render the same generated geometry and status palette.
+/// Source of truth: assets/icons/source.json; never hand-edit generated Swift/SVG.
 public enum StatusIcon {
-    public static func image(_ state: StatusMark, colored: Bool, highlighted: Bool = false) -> NSImage {
-        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
-            let outline: NSColor = !colored ? .black : highlighted ? .selectedMenuItemTextColor : .labelColor
-            let accent: NSColor
-            if !colored || highlighted { accent = outline }
-            else {
-                switch state {
-                case .ready: accent = .systemBlue
-                case .authenticating: accent = .systemOrange
-                case .authenticated: accent = .systemGreen
-                case .failed: accent = .systemRed
-                case .disconnected, .unavailable: accent = .secondaryLabelColor
-                }
+    public static let sourceSHA256 = GeneratedIconSource.sourceSHA256
+    private struct Path: Decodable {
+        let width: Double
+        let commands: [[Double]]
+        let fill: Bool?
+    }
+    private struct Mark: Decodable { let color: String; let paths: [Path] }
+    private struct Document: Decodable {
+        let size: Double
+        let palette: [String: String]
+        let windows_outline: String
+        let shield: Path
+        let states: [String: Mark]
+    }
+    private static let source = try! JSONDecoder().decode(Document.self, from: Data(GeneratedIconSource.json.utf8))
+    private static func color(_ hex: String) -> NSColor {
+        let value = UInt32(hex, radix: 16)!
+        return NSColor(srgbRed: CGFloat((value >> 16) & 255)/255,
+                       green: CGFloat((value >> 8) & 255)/255, blue: CGFloat(value & 255)/255, alpha: 1)
+    }
+    private static func draw(_ definition: Path, color: NSColor) {
+        let path = NSBezierPath()
+        for command in definition.commands {
+            switch Int(command[0]) {
+            case 0: path.move(to: NSPoint(x: command[1],y: command[2]))
+            case 1: path.line(to: NSPoint(x: command[1],y: command[2]))
+            case 2: path.curve(to: NSPoint(x: command[5],y: command[6]),
+                               controlPoint1: NSPoint(x: command[1],y: command[2]),
+                               controlPoint2: NSPoint(x: command[3],y: command[4]))
+            case 3: path.close()
+            case 4: path.appendOval(in: NSRect(x: command[1],y: command[2],width: command[3],height: command[4]))
+            default: preconditionFailure("Invalid generated path command")
             }
-            func stroke(_ points: [NSPoint], color: NSColor, width: CGFloat = 1.5) {
-                let path = NSBezierPath()
-                path.lineWidth = width
-                path.lineCapStyle = .round
-                path.lineJoinStyle = .round
-                path.move(to: points[0])
-                for point in points.dropFirst() { path.line(to: point) }
-                color.setStroke(); path.stroke()
-            }
-            let shield = NSBezierPath()
-            shield.move(to: NSPoint(x: 9, y: 16.5))
-            shield.curve(to: NSPoint(x: 16, y: 14), controlPoint1: NSPoint(x: 11.5, y: 15), controlPoint2: NSPoint(x: 13, y: 14.2))
-            shield.line(to: NSPoint(x: 16, y: 9))
-            shield.curve(to: NSPoint(x: 9, y: 1.5), controlPoint1: NSPoint(x: 16, y: 5.8), controlPoint2: NSPoint(x: 13.5, y: 3))
-            shield.curve(to: NSPoint(x: 2, y: 9), controlPoint1: NSPoint(x: 4.5, y: 3), controlPoint2: NSPoint(x: 2, y: 5.8))
-            shield.line(to: NSPoint(x: 2, y: 14))
-            shield.curve(to: NSPoint(x: 9, y: 16.5), controlPoint1: NSPoint(x: 5, y: 14.2), controlPoint2: NSPoint(x: 6.5, y: 15))
-            shield.close(); shield.lineWidth = 1.3
-            shield.lineJoinStyle = .round
-            outline.setStroke(); shield.stroke()
-            func p(_ x: CGFloat, _ y: CGFloat) -> NSPoint { NSPoint(x: x, y: y) }
-            switch state {
-            case .ready:
-                stroke([p(5.4,11.9),p(12.6,11.9),p(12.6,7.8),p(11,7.8),p(10,6.6),p(8,6.6),p(7,7.8),p(5.4,7.8),p(5.4,11.9)], color: accent, width: 1.2)
-                for x: CGFloat in [7,9,11] { stroke([p(x,11.7),p(x,10.2)], color: accent, width: 1) }
-            case .authenticating:
-                stroke([p(5.5,10.8),p(12.2,10.8),p(10.5,12.5)], color: accent)
-                stroke([p(12.5,7.5),p(5.8,7.5),p(7.5,5.8)], color: accent)
-            case .authenticated:
-                stroke([p(5.5,9.1),p(8,6.6),p(12.6,11.4)], color: accent, width: 1.9)
-            case .failed:
-                stroke([p(6.2,6.8),p(11.8,12.1)], color: accent, width: 1.8)
-                stroke([p(6.2,12.1),p(11.8,6.8)], color: accent, width: 1.8)
-            case .disconnected:
-                stroke([p(5.5,9.5),p(12.5,9.5)], color: accent, width: 1.9)
-            case .unavailable:
-                stroke([p(9,12.5),p(9,9)], color: accent, width: 1.8)
-                accent.setFill(); NSBezierPath(ovalIn: NSRect(x: 8.1,y: 5.8,width: 1.8,height: 1.8)).fill()
-            }
+        }
+        if definition.fill == true { color.setFill(); path.fill() }
+        else {
+            path.lineWidth = definition.width
+            path.lineCapStyle = .round; path.lineJoinStyle = .round
+            color.setStroke(); path.stroke()
+        }
+    }
+    public static func image(_ state: StatusMark, colored: Bool, highlighted: Bool = false,
+                             windows: Bool = false, appIcon: Bool = false) -> NSImage {
+        let image = NSImage(size: NSSize(width: source.size,height: source.size), flipped: false) { _ in
+            let mark = source.states[state.rawValue]!
+            let outline: NSColor = windows ? color(source.windows_outline)
+                : !colored ? .black : highlighted ? .selectedMenuItemTextColor : .labelColor
+            let accent = !colored || highlighted ? outline : color(source.palette[appIcon ? "green" : mark.color]!)
+            draw(source.shield, color: outline)
+            for path in mark.paths { draw(path, color: accent) }
             return true
         }
         image.isTemplate = !colored

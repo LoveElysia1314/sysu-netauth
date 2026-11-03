@@ -2,6 +2,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 [ "$(uname -s)" = Darwin ] || { echo 'Build on macOS.' >&2; exit 1; }
+python3 scripts/generate-icons.py --check
 cargo build --locked --release --bin sysu_netauth --bin sysu_netauth_service
 swift build --package-path macos --build-system native -c release "$@"
 bin_dir=$(swift build --package-path macos --build-system native -c release "$@" --show-bin-path)
