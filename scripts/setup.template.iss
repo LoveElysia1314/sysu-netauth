@@ -59,11 +59,17 @@ DisableProgramGroupPage=yes
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "Languages/ChineseSimplified.isl"
 
+[InstallDelete]
+; 旧构建可能把带版本后缀的 ICU 改名为 icuuc.dll，遮蔽 Qt 所需的 Windows 系统库。
+; 升级时仅停止打包该文件不足以修复旧安装，必须精确清理残留文件。
+Type: files; Name: "{app}\_internal\icuuc.dll"
+
 [Files]
 ; 主 GUI 若仍被短暂占用，允许 Windows 在重启时完成替换，避免 MoveFile code 5
 ; 直接中断安装。服务 EXE 仍要求安装前完全停止，不使用延迟替换。
 Source: "@APP_DIR_RELATIVE@\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion restartreplace
-Source: "@APP_DIR_RELATIVE@\*"; DestDir: "{app}"; Excludes: "{#MyAppExeName}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 即使 --skip-pyinstaller 使用旧构建目录，也不要再次复制冲突的 ICU 库。
+Source: "@APP_DIR_RELATIVE@\*"; DestDir: "{app}"; Excludes: "{#MyAppExeName},\_internal\icuuc.dll"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\sysu_netauth\assets\icon-ethernet.ico"; DestDir: "{app}"; DestName: "{#MyAppIconName}"; Flags: ignoreversion
 
 [Dirs]

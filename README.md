@@ -130,6 +130,9 @@ sysu_netauth -i "以太网 2" -u "NetID"
 
 ## 构建
 
+建议使用官方 CPython 的独立虚拟环境构建。Conda 会额外搜索自身的 DLL 目录，
+可能使 PyInstaller 的分析子进程在导入 Qt 时就遇到同名 ICU 接口冲突。
+
 额外安装 PyInstaller：
 
 ```powershell
@@ -176,6 +179,13 @@ Get-Content "$env:ProgramData\SYSUNetAuth\service.log" -Tail 20
 ```
 
 ### 常见问题
+
+**启动时导入 QtCore 报“找不到指定的程序”**：安装目录中的
+`_internal\icuuc.dll` 可能来自 Conda 或构建机 PATH，提供的是
+`ucnv_open_78` 等带版本后缀的函数，与 Qt 所需的 Windows ICU 接口不兼容。
+本分支的打包脚本会排除该同名 DLL，安装器也会清理旧安装残留。
+受此问题影响的旧安装可在退出 GUI 后，将安装目录中的
+`_internal\icuuc.dll` 改名为 `icuuc.dll.bak`，再启动程序，使用 Windows 自带的 ICU。
 
 **状态显示 IDLE 且未自动认证**：检查是否已填写 NetID 和密码，确认 `auto_auth` 为 `true`，网线已插入。
 
