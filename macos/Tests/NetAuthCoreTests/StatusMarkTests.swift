@@ -2,6 +2,15 @@ import XCTest
 @testable import NetAuthCore
 
 final class StatusMarkTests: XCTestCase {
+    func testRedrawIdentityChangesOnlyWhenVisibleArtworkChanges() {
+        let initial = StatusIconRenderKey(mark: .ready, colored: false, appearance: "aqua")
+        for _ in 0..<10000 {
+            XCTAssertEqual(initial, StatusIconRenderKey(mark: .ready, colored: false, appearance: "aqua"))
+        }
+        XCTAssertNotEqual(initial, StatusIconRenderKey(mark: .failed, colored: false, appearance: "aqua"))
+        XCTAssertNotEqual(initial, StatusIconRenderKey(mark: .ready, colored: true, appearance: "aqua"))
+        XCTAssertNotEqual(initial, StatusIconRenderKey(mark: .ready, colored: false, appearance: "darkAqua"))
+    }
     func testStateAndWindowsColorMapping() {
         let cases: [(String, StatusMark, String)] = [
             ("idle", .ready, "blue"), ("authenticating", .authenticating, "orange"),

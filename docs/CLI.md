@@ -8,6 +8,8 @@ Windows 使用管理员终端；Linux 和 macOS 的服务操作使用 `sudo`。�
 sysu_netauth interfaces
 sysu_netauth status --json
 sysu_netauth watch --json
+sysu_netauth preferences --json
+sysu_netauth diagnostics --json
 sysu_netauth authenticate
 sysu_netauth logoff
 sysu_netauth config
@@ -19,6 +21,8 @@ sysu_netauth check-update
 `interfaces` 列出网卡，`status` 读取当前状态，`watch` 持续输出状态变化。`authenticate` 和 `logoff` 请求服务连接或断开。`config` 显示配置并隐藏密码，`config password` 交互式修改密码，`config import` 导入 JSON 设置。
 
 `check-update` 发起正式版更新检查，不依赖有线认证状态。输出中的 `checking` 表示检查已启动，结果可从 `status --json` 或 `watch --json` 中读取。
+
+`preferences` 返回不含账号和密码的界面相关设置；`diagnostics` 返回版本、状态和有长度限制的最近服务日志，遮盖当前账号与密码，不导出配置。分享日志前仍应检查其他个人信息。
 
 所有命令支持 `--json`。服务操作需要后台服务正在运行。
 
@@ -47,10 +51,10 @@ sysu_netauth logoff --iface eth0
 | `iface` | 空 | `interfaces --json` 返回的设备 ID；Windows 为系统设备 ID，Linux/macOS 为 MAC 地址 |
 | `auto_auth` | `true` | 自动认证及失败重试 |
 | `retry_interval` | `60` | 失败重试间隔的上限，范围为 15–3600 秒 |
-| `service_mode` | `true` | Windows 服务独立运行 |
-| `launch_gui_on_login` | `false` | Windows 登录时启动界面 |
-| `hide_window_on_login` | `true` | 登录启动时隐藏窗口 |
-| `desktop_notify` | `true` | Windows 托盘通知 |
+| `service_mode` | `true` | Windows 服务独立运行；GUI 不再提供此开关，保存时固定为 true |
+| `launch_gui_on_login` | `false` | Windows 开机后启动界面程序（当前系统用户进入桌面后） |
+| `hide_window_on_login` | `true` | 开机后自动启动时隐藏配置窗口，手动打开仍显示 |
+| `desktop_notify` | `false` | Windows 认证状态变化通知，需要界面程序驻留托盘 |
 
 未指定的字段使用默认值。设置包含明文凭据，应限制文件访问权限。
 

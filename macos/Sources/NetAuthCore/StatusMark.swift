@@ -1,5 +1,17 @@
 import Foundation
 
+/// Identity of the visible artwork, independent of transient AppKit appearance objects.
+public struct StatusIconRenderKey: Equatable {
+    public let mark: StatusMark
+    public let colored: Bool
+    public let appearance: String
+    public init(mark: StatusMark, colored: Bool, appearance: String) {
+        self.mark = mark
+        self.colored = colored
+        self.appearance = appearance
+    }
+}
+
 public enum StatusMark: String, CaseIterable {
     case ready, authenticating, authenticated, failed, disconnected, unavailable
     public static func resolve(state: String, message: String = "") -> StatusMark {

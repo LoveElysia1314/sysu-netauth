@@ -31,3 +31,74 @@ pub fn record(paths: &Paths, message: &str) {
         eprintln!("diagnostic log: {e}");
     }
 }
+
+/// Read only the fixed service log, bounded to the last 32 KiB. Never export config.
+pub fn read_log(paths: &Paths, config: &crate::config::Config) -> std::io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = match std::fs::File::open(paths.state.join("service.log")) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(e) => return Err(e),
+    };
+    let size = file.metadata()?.len();
+    let start = size.saturating_sub(32768);
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::new();
+    file.take(32768).read_to_end(&mut bytes)?;
+    if start > 0 {
+        if let Some(end) = bytes.iter().position(|b| *b == b'\n') {
+            bytes.drain(..=end);
+        } else {
+            bytes.clear();
+        }
+    }
+    let mut log = String::from_utf8_lossy(&bytes).into_owned();
+    // Longest first, so overlapping credentials cannot leave a partial secret.
+    let mut secrets = [&config.username, &config.password];
+    secrets.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    for secret in secrets {
+        if !secret.is_empty() {
+            log = log.replace(secret.as_str(), "[redacted]");
+        }
+    }
+    log.retain(|c| !c.is_control() || c == '\n' || c == '\t');
+    // JSON escaping can double the length; retain space within the 64 KiB IPC frame.
+    if log.len() > 28 * 1024 {
+        let mut end = 28 * 1024;
+        while !log.is_char_boundary(end) {
+            end -= 1;
+        }
+        log.truncate(end);
+    }
+    Ok(log)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn log_export_is_bounded_and_excludes_credentials_and_config() {
+        let root = std::env::temp_dir().join(format!("netauth-diagnostics-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let paths = Paths {
+            state: root.clone(),
+            config: root.join("config.json"),
+            endpoint: root.join("socket"),
+        };
+        let config = crate::config::Config {
+            username: "offline-user".into(),
+            password: "offline-password".into(),
+            ..Default::default()
+        };
+        fs::write(&paths.config, "must not be read").unwrap();
+        assert_eq!(read_log(&paths, &config).unwrap(), "");
+        fs::write(
+            root.join("service.log"),
+            format!("{}\noffline-user offline-password\n", "x".repeat(40000)),
+        )
+        .unwrap();
+        let output = read_log(&paths, &config).unwrap();
+        assert_eq!(output, "[redacted] [redacted]\n");
+        fs::remove_dir_all(root).unwrap();
+    }
+}

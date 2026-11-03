@@ -12,8 +12,9 @@ if CommandLine.arguments.contains("--export-windows") {
         var v = value.littleEndian
         return withUnsafeBytes(of: &v) { Data($0) }
     }
-    for name in ["app"] + StatusMark.allCases.map(\.rawValue) {
-        let state = name == "app" ? StatusMark.ready : StatusMark(rawValue: name)!
+    let variants = ["app"] + StatusMark.allCases.map(\.rawValue) + StatusMark.allCases.flatMap { [$0.rawValue + "-light", $0.rawValue + "-dark"] }
+    for name in variants {
+        let state = name == "app" ? StatusMark.ready : StatusMark(rawValue: name.components(separatedBy: "-")[0])!
         var pngs: [Data] = []
         for size in sizes {
             let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil,pixelsWide: size,pixelsHigh: size,
@@ -21,7 +22,7 @@ if CommandLine.arguments.contains("--export-windows") {
                 colorSpaceName: .deviceRGB,bytesPerRow: 0,bitsPerPixel: 0)!
             NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
             NSColor.clear.setFill(); NSRect(x: 0,y: 0,width: size,height: size).fill(using: .copy)
-            StatusIcon.image(state,colored: true,windows: true,appIcon: name == "app")
+            StatusIcon.image(state,colored: true,windows: true,appIcon: name == "app", monochrome: name.hasSuffix("-light") ? .black : name.hasSuffix("-dark") ? .white : nil)
                 .draw(in: NSRect(x: 0,y: 0,width: size,height: size))
             NSGraphicsContext.current = nil
             pngs.append(bitmap.representation(using: .png,properties: [:])!)
@@ -38,7 +39,30 @@ if CommandLine.arguments.contains("--export-windows") {
         try ico.write(to: directory.appendingPathComponent(name + ".ico"))
     }
     try Data((StatusIcon.sourceSHA256 + "\n").utf8).write(to: directory.appendingPathComponent("source.sha256"))
-    print("Exported 7 Windows ICO files with 9 vector-rendered sizes each")
+    print("Exported 19 Windows ICO files with 9 vector-rendered sizes each")
+    exit(0)
+}
+
+// Generate macOS Dock/Finder assets directly from the shared vector source.
+if let option = CommandLine.arguments.firstIndex(of: "--export-macos"), CommandLine.arguments.count > option + 1 {
+    let directory = URL(fileURLWithPath: CommandLine.arguments[option + 1], isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    for points in [16, 32, 128, 256, 512] {
+        for scale in [1, 2] {
+            let size = points * scale
+            let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+            NSColor.clear.setFill(); NSRect(x: 0,y: 0,width: size,height: size).fill(using: .copy)
+            // A fixed brand outline keeps the Dock icon independent of desktop appearance.
+            StatusIcon.image(.ready, colored: true, windows: true, appIcon: true)
+                .draw(in: NSRect(x: 0,y: 0,width: size,height: size))
+            NSGraphicsContext.current = nil
+            let name = "icon_\(points)x\(points)" + (scale == 2 ? "@2x" : "") + ".png"
+            try bitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent(name))
+        }
+    }
     exit(0)
 }
 

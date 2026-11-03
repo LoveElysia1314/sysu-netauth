@@ -37,7 +37,7 @@ public enum AdapterSelection {
 }
 
 public enum Action: String {
-    case interfaces, status, authenticate, logoff, config, connect
+    case interfaces, status, authenticate, logoff, config, connect, preferences, diagnostics
 }
 
 public enum ClientError: LocalizedError {
@@ -67,7 +67,7 @@ public struct Client {
     public func run(_ action: Action, timeout: TimeInterval = 15, authorized: Bool = false) throws -> Data {
         if #available(macOS 13, *), authorized, dataDirectory == nil,
            ProcessInfo.processInfo.environment["NETAUTH_CLI"] == nil,
-           [.status, .authenticate, .logoff].contains(action) {
+           [.status, .authenticate, .logoff, .preferences, .diagnostics].contains(action) {
             return try Helper.call(action.rawValue)
         }
         return try execute(arguments: arguments(for: action), timeout: timeout, authorized: authorized)

@@ -7,8 +7,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let password = NSSecureTextField()
     let interface = NSPopUpButton()
     let manual = NSButton(checkboxWithTitle: "手动选择网卡", target: nil, action: nil)
-    let autoAuth = NSButton(checkboxWithTitle: "启动后自动认证", target: nil, action: nil)
-    let retry = NSTextField(string: "60")
+    let autoAuth = NSButton(checkboxWithTitle: "服务启动后自动认证", target: nil, action: nil)
+    var retryInterval = 60
+    var preferencesLoaded = false
+    var diagnosticsWindow: NSWindow?
     let status = NSTextField(labelWithString: "正在读取…")
     let details = NSTextField(wrappingLabelWithString: "")
     let network = NSTextField(wrappingLabelWithString: "")
@@ -16,9 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var buttons: [NSButton] = []
     var detected: [Adapter] = []
     var busy = false
-    let login = NSButton(checkboxWithTitle: "登录时启动程序", target: nil, action: nil)
-    let hidden = NSButton(checkboxWithTitle: "启动时隐藏窗口", target: nil, action: nil)
-    let notify = NSButton(checkboxWithTitle: "状态变化时通知", target: nil, action: nil)
+    let login = NSButton(checkboxWithTitle: "开机后启动界面程序", target: nil, action: nil)
+    let hidden = NSButton(checkboxWithTitle: "开机后隐藏配置窗口", target: nil, action: nil)
+    let notify = NSButton(checkboxWithTitle: "认证状态变化后通知", target: nil, action: nil)
     var statusItem: NSStatusItem?
     var menuStatus: NSMenuItem?
     var menuActions: [NSMenuItem] = []
@@ -30,6 +32,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var currentMark: StatusMark = .ready
     var iconModeItems: [NSMenuItem] = []
     var iconAppearanceObserver: NSKeyValueObservation?
+    var iconRenderKey: StatusIconRenderKey?
+    var iconRedrawPending = false
     let demo = ProcessInfo.processInfo.environment["NETAUTH_CLI"]?.hasSuffix("mock-cli.py") == true
     let client = Client(executable: Client.resolveExecutable(),
                         dataDirectory: ProcessInfo.processInfo.environment["NETAUTH_DATA_DIR"])
@@ -71,6 +75,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return box
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"), let icon = NSImage(contentsOf: url) {
+            NSApp.applicationIconImage = icon
+        }
         let menu = NSMenu()
         let appItem = NSMenuItem()
         menu.addItem(appItem)
@@ -98,28 +105,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         password.placeholderString = "请输入密码"
         username.identifier = NSUserInterfaceItemIdentifier("netid")
         password.identifier = NSUserInterfaceItemIdentifier("password")
+        autoAuth.state = .on
+        login.toolTip = "当前系统用户进入桌面后运行；不影响后台服务自动认证。"
+        notify.toolTip = "需要界面程序驻留菜单栏，退出程序后不发送通知。"
         interface.addItem(withTitle: "自动探测有线网卡")
         manual.target = self
         manual.action = #selector(selectMode)
         interface.isEnabled = false
-        let service = NSButton(checkboxWithTitle: "认证服务独立于程序运行（launchd）", target: nil, action: nil)
-        service.state = .on
-        service.isEnabled = false
+        let service = NSTextField(labelWithString: "后台服务独立运行，退出界面不影响认证")
+        service.font = .systemFont(ofSize: 11)
+        service.textColor = .secondaryLabelColor
         let controls = NSStackView(views: [button("保存设置", #selector(save)),
                                           button("重新连接", #selector(connect)),
                                           button("断开连接", #selector(disconnect))])
         controls.spacing = 8
         buttons[1].keyEquivalent = "\r"
         let left = column([row("NetID", username), row("密码", password), row("网卡", interface),
-                           manual, row("重试(秒)", retry), service, autoAuth, login, hidden, notify, controls])
+                           manual, autoAuth, service, NSTextField(labelWithString: "界面与提醒"), login, hidden, notify, controls])
         status.font = .boldSystemFont(ofSize: 20)
         status.textColor = .secondaryLabelColor
         details.preferredMaxLayoutWidth = 308
         network.preferredMaxLayoutWidth = 308
         footer.preferredMaxLayoutWidth = 740
         let refresh = button("刷新状态", #selector(refresh))
-        let right = column([status, details, network, refresh, button("安装后台服务…", #selector(installService))], spacing: 14)
-        let leftBox = box("账户与连接", left)
+        let right = column([status, details, network, refresh, button("查看日志", #selector(viewDiagnostics)), button("导出诊断信息…", #selector(exportDiagnostics)), button("安装／更新后台服务…", #selector(installService))], spacing: 14)
+        let leftBox = box("账户与认证", left)
         let rightBox = box("网络状态", right)
         let panes = NSStackView(views: [leftBox, rightBox])
         panes.distribution = .fillEqually
@@ -165,7 +175,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 self.setBusy(false)
                 switch result {
-                case .success: self.footer.stringValue = "后台服务已安装；请填写账号后保存设置。"
+                case .success:
+                    self.footer.stringValue = "后台服务已安装；请填写账号后保存设置。"
+                    self.runAction(nil, authorized: true)
                 case .failure(let error): self.footer.stringValue = String(error.localizedDescription.prefix(240))
                 }
             }
@@ -185,19 +197,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func save() { saveSettings(connectAfter: false) }
     func saveSettings(connectAfter: Bool) {
         guard !username.stringValue.trimmingCharacters(in: .whitespaces).isEmpty,
-              !password.stringValue.isEmpty,
-              let seconds = Int(retry.stringValue), (15...3600).contains(seconds) else {
-            footer.stringValue = "请填写 NetID 与密码，重试间隔需为 15–3600 秒。"
+              !password.stringValue.isEmpty else {
+            footer.stringValue = "请填写 NetID 与密码。"
             return
         }
         guard manual.state != .on || detected.indices.contains(interface.indexOfSelectedItem) else {
             footer.stringValue = "没有可手动选择的以太网接口。"
             return
         }
+        guard demo || preferencesLoaded else { footer.stringValue = "请先更新后台服务并刷新状态，读取已有设置。"; return }
         var settings = Settings()
         settings.username = username.stringValue
         settings.password = password.stringValue
-        settings.retry_interval = seconds
+        settings.retry_interval = retryInterval
         settings.auto_auth = autoAuth.state == .on
         settings.launch_gui_on_login = login.state == .on
         settings.hide_window_on_login = hidden.state == .on
@@ -236,7 +248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if value { statusGeneration += 1; noticeTimer?.invalidate() }
         buttons.forEach { $0.isEnabled = !value }
         menuActions.forEach { $0.isEnabled = !value }
-        [username, password, retry].forEach { $0.isEnabled = !value }
+        [username, password].forEach { $0.isEnabled = !value }
         manual.isEnabled = !value
         autoAuth.isEnabled = !value
         selectMode()
@@ -245,14 +257,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !busy else { return }
         setBusy(true)
         DispatchQueue.global(qos: .userInitiated).async {
+            var preferences: Preferences?
             let result = Result { () throws -> Snapshot in
+                if !self.demo && !self.preferencesLoaded {
+                    preferences = try JSONDecoder().decode(Preferences.self, from: self.client.run(.preferences, authorized: authorized))
+                }
                 let data = try self.client.run(action ?? .status, authorized: authorized)
                 return try JSONDecoder().decode(Snapshot.self, from: data)
             }
             DispatchQueue.main.async {
                 switch result {
                 case .success(let snapshot):
-                    self.applySnapshot(snapshot)
+                    if let prefs = preferences {
+                        self.retryInterval = prefs.retry_interval
+                        self.autoAuth.state = prefs.auto_auth ? .on : .off
+                        self.manual.state = prefs.iface_mode == "manual" ? .on : .off
+                        self.preferencesLoaded = true
+                        self.applySnapshot(snapshot)
+                        if let index = self.detected.firstIndex(where: { $0.id == prefs.iface }) { self.interface.selectItem(at: index) }
+                    } else { self.applySnapshot(snapshot) }
                 case .failure(let error):
                     if action == .authenticate { self.notices.cancelConnectRequest() }
                     self.noticeTimer?.invalidate()

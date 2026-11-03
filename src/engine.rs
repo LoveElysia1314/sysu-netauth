@@ -556,6 +556,17 @@ impl Engine {
                     self.refresh_adapters()?;
                     Ok(serde_json::to_value(&self.adapters)?)
                 }
+                Action::Preferences => {
+                    let mut value = serde_json::to_value(&self.config)?;
+                    value.as_object_mut().unwrap().remove("username");
+                    value.as_object_mut().unwrap().remove("password");
+                    Ok(value)
+                }
+                Action::Diagnostics => Ok(serde_json::json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "state": self.snapshot.state,
+                    "log": crate::diagnostics::read_log(&self.paths, &self.config)?
+                })),
                 Action::GetConfig => Ok(serde_json::to_value(&self.config)?),
                 Action::Authenticate => {
                     self.connect()?;
@@ -875,6 +886,29 @@ mod tests {
         e.set_adapters(vec![]);
         assert!(rx.recv().unwrap().unwrap().adapters.is_empty());
         assert_eq!(e.snapshot.state, State::Idle);
+    }
+    #[test]
+    fn preferences_exclude_credentials_and_preserve_internal_retry_settings() {
+        let mut e = engine();
+        e.config.username = "offline-user".into();
+        e.config.password = "offline-password".into();
+        e.config.retry_interval = 125;
+        let (tx, rx) = mpsc::sync_channel(1);
+        e.call(Call {
+            request: crate::ipc::Request {
+                version: 1,
+                id: 42,
+                action: Action::Preferences,
+            },
+            reply: tx,
+            updates: None,
+        });
+        let response = rx.recv().unwrap();
+        assert!(response.ok);
+        assert_eq!(response.id, 42);
+        assert_eq!(response.data["retry_interval"], 125);
+        assert!(response.data.get("username").is_none());
+        assert!(response.data.get("password").is_none());
     }
     fn engine() -> Engine {
         let (tx, _) = mpsc::sync_channel(8);

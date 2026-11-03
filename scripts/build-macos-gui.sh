@@ -8,6 +8,10 @@ swift build --package-path macos --build-system native -c release "$@"
 bin_dir=$(swift build --package-path macos --build-system native -c release "$@" --show-bin-path)
 app=dist/SYSUNetAuth.app
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+icon_dir=$(mktemp -d "${TMPDIR:-/tmp}/netauth-icon.XXXXXX")
+trap 'rm -rf "$icon_dir"' EXIT
+"$bin_dir/NetAuthIconPreview" --export-macos "$icon_dir/AppIcon.iconset"
+iconutil -c icns "$icon_dir/AppIcon.iconset" -o "$app/Contents/Resources/AppIcon.icns"
 rust_bin=${CARGO_TARGET_DIR:-target}/release
 version=$("$rust_bin/sysu_netauth" --version | awk '{print $2}')
 core_version=${version%%-*}
@@ -24,6 +28,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>io.github.peterrobot.sysu-netauth.gui.experimental</string>
 <key>CFBundleName</key><string>SYSU NetAuth</string>
 <key>CFBundleExecutable</key><string>SYSUNetAuth</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>

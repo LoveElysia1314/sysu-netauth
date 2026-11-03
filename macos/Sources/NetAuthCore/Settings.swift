@@ -10,7 +10,7 @@ public struct Settings: Codable {
     public var service_mode = true
     public var launch_gui_on_login = false
     public var hide_window_on_login = true
-    public var desktop_notify = true
+    public var desktop_notify = false
     public init() {}
 }
 
@@ -46,4 +46,16 @@ public extension Client {
         return try execute(arguments: arguments,
                            authorized: authorized)
     }
+}
+
+public struct Preferences: Decodable {
+    public let auto_auth: Bool
+    public let retry_interval: Int
+    public let iface_mode: String
+    public let iface: String
+}
+public struct DiagnosticReport: Codable {
+    public let version: String
+    public let state: String
+    public let log: String
 }

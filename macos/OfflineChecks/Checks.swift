@@ -1,6 +1,13 @@
 import Foundation
 @main struct OfflineCheck {
  static func main() throws {
+  let iconKey = StatusIconRenderKey(mark: .ready, colored: true, appearance: "darkAqua")
+  for _ in 0..<10000 {
+   precondition(iconKey == StatusIconRenderKey(mark: .ready, colored: true, appearance: "darkAqua"))
+  }
+  precondition(iconKey != StatusIconRenderKey(mark: .failed, colored: true, appearance: "darkAqua"))
+  precondition(iconKey != StatusIconRenderKey(mark: .ready, colored: false, appearance: "darkAqua"))
+  precondition(iconKey != StatusIconRenderKey(mark: .ready, colored: true, appearance: "aqua"))
   let client = Client(executable: URL(fileURLWithPath: "/unused"), dataDirectory: "/tmp/a b;$(id)")
   precondition(client.arguments(for: .authenticate) == ["--json", "--data-dir", "/tmp/a b;$(id)", "authenticate"])
   let json = Data(#"{"state":"idle","message":"mock","internet":false,"adapter":null,"suspended":false,"manual_disconnect":false,"adapters":[]}"#.utf8)
@@ -40,6 +47,13 @@ import Foundation
   func rejects(_ action: String, _ payload: Data?) {
     do { _ = try Helper.encodeRequest(action, payload: payload); fatalError("request accepted") } catch { }
   }
+  precondition(!settings.desktop_notify && !settings.launch_gui_on_login && settings.hide_window_on_login && settings.service_mode)
+  for action in ["preferences", "diagnostics"] {
+   _ = try Helper.encodeRequest(action, payload: nil)
+   rejects(action, Data("{}".utf8))
+  }
+  let prefs = try JSONDecoder().decode(Preferences.self, from: Data(#"{"auto_auth":false,"retry_interval":125,"iface_mode":"manual","iface":"00:11:22:33:44:55"}"#.utf8))
+  precondition(!prefs.auto_auth && prefs.retry_interval == 125)
   rejects("exec", nil)
   rejects("status", Data("{}".utf8))
   rejects("set_config", nil)

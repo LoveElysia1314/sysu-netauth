@@ -13,11 +13,23 @@
   ],
   "files": {
     "app.ico": "a42a64de578a875bfcefed9c474ab6a4d759182eb861dee0b79385db6143653c",
+    "authenticated-dark.ico": "3dd0804625cd8101de3a3dcba3bb3c64b58f622dea9b4ccd88dff623962dc64f",
+    "authenticated-light.ico": "49b40f982124005a2a6c75ab95bff617342f7ab84e7be43d760b42094b3bedbe",
     "authenticated.ico": "ffde3ea86e497c6596f34dda33a46b0dcf37bb00fc4511b08aa6c8ab4a49fca6",
+    "authenticating-dark.ico": "9e831d97fb807c7893ea3502a7f1e8d73f209bb430145dfb298c23810eb452cc",
+    "authenticating-light.ico": "a9cac61ecbdce64ce34082a121b8e531b042bf9d40afbb2d3b1910b3d676f7c9",
     "authenticating.ico": "3799c6a0a13f4ea64bac91c4937c30591b784922d4873b41465cf5a0c23e50a3",
+    "disconnected-dark.ico": "8dbef38c17d3ef8d2bea26758557b43e270fd42ec4e240fd334f5f3c57cc6c74",
+    "disconnected-light.ico": "78e9971cec989e50834fa8f381263f918927d6d2427ab434c92e34f9200fd59a",
     "disconnected.ico": "8aa5aa4c47243c688da29356be36d26a2f0da8f94dac8f66edf76ff341358e51",
+    "failed-dark.ico": "1775cbdf97b0230daad17eafe2d6c4d4fa0f5faab8b564c8ae68beb9e864b2ba",
+    "failed-light.ico": "c9547f9d092c1dd9733f3f007410098a80f0f3f309e58f4368d344a9f0b6e18d",
     "failed.ico": "0e60d949bc741f58a0ccac404e41fd0f77e6ea7c924b251d895d1d215ef6bf79",
+    "ready-dark.ico": "585f6b2cbe02b0c90c5f24528ed61125a2d0714484aa2ecef5b634128350bace",
+    "ready-light.ico": "b5d4d8605829e38ada529481ece454665a40a320a8203578be1040d54021594f",
     "ready.ico": "eed91b7bb5ebac20f4b6985be034391ae579f26b91eef6e18e782bcd08f39bd8",
+    "unavailable-dark.ico": "b49f3f4311e81f9a74b607bfed6d34a97354c87cacb9f13ece6ab2b912c2703e",
+    "unavailable-light.ico": "8745ffb3acb612de722e5acc809b20f9d26297f031d6f6318b9ecc235722400a",
     "unavailable.ico": "f0f812962d4411f33cdcd625d6839fe0d3a14d73db9b4b0eb8b83ea52fd69c56"
   }
 }
