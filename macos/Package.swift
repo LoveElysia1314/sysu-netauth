@@ -7,7 +7,9 @@ let package = Package(
     products: [.executable(name: "SYSUNetAuth", targets: ["NetAuthApp"]), .executable(name: "SYSUNetAuthHelper", targets: ["NetAuthHelper"])],
     targets: [
         .target(name: "NetAuthCore"),
-        .executableTarget(name: "NetAuthApp", dependencies: ["NetAuthCore"]),
+        .target(name: "NetAuthArtwork", dependencies: ["NetAuthCore"]),
+        .executableTarget(name: "NetAuthIconPreview", dependencies: ["NetAuthArtwork", "NetAuthCore"]),
+        .executableTarget(name: "NetAuthApp", dependencies: ["NetAuthCore", "NetAuthArtwork"]),
         .executableTarget(name: "NetAuthHelper", dependencies: ["NetAuthCore"]),
         .testTarget(name: "NetAuthCoreTests", dependencies: ["NetAuthCore"])
     ]

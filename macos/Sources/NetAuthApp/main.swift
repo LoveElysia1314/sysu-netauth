@@ -26,6 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var pollInFlight = false
     var statusGeneration = 0
     var notices = StateNotifications()
+    var currentMark: StatusMark = .ready
+    var iconModeItems: [NSMenuItem] = []
+    var iconAppearanceObserver: NSKeyValueObservation?
     let demo = ProcessInfo.processInfo.environment["NETAUTH_CLI"]?.hasSuffix("mock-cli.py") == true
     let client = Client(executable: Client.resolveExecutable(),
                         dataDirectory: ProcessInfo.processInfo.environment["NETAUTH_DATA_DIR"])
@@ -77,6 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let close = NSMenuItem(title: "关闭窗口", action: #selector(closeMainWindow), keyEquivalent: "w")
         close.target = self
         appMenu.addItem(close)
+        appMenu.addItem(makeIconMenu())
         appMenu.addItem(.separator())
         let test = NSMenuItem(title: "发送离线测试通知", action: #selector(testNotification), keyEquivalent: "t")
         test.keyEquivalentModifierMask = [.command, .shift]

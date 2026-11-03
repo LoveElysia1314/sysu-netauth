@@ -3,6 +3,7 @@ import Carbon
 import ServiceManagement
 import UserNotifications
 import NetAuthCore
+import NetAuthArtwork
 
 extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
     func configureDesktop() {
@@ -24,6 +25,7 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
             menu.addItem(entry)
             if selector != #selector(showWindow) { menuActions.append(entry) }
         }
+        menu.addItem(makeIconMenu())
         menu.addItem(.separator())
         let test = NSMenuItem(title: "发送离线测试通知", action: #selector(testNotification), keyEquivalent: "")
         test.target = self
@@ -34,6 +36,9 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
         menu.addItem(quit)
         item.menu = menu
         updateStatusItem("idle")
+        iconAppearanceObserver = item.button?.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.redrawStatusIcon() }
+        }
         login.target = self
         login.action = #selector(changeLogin)
         hidden.target = self
@@ -158,17 +163,48 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
         postNotification(title: "SYSU NetAuth · 离线测试", body: "这是本机通知测试，未进行校园网认证。", reportResult: true)
     }
     func observeDesktop(_ snapshot: Snapshot) {
-        updateStatusItem(snapshot.state)
+        updateStatusItem(snapshot.state, message: snapshot.message)
         if notices.observe(snapshot.state, enabled: notify.state == .on, now: ProcessInfo.processInfo.systemUptime) {
             // Do not put account details or service error messages on the lock screen.
             postNotification(title: "SYSU NetAuth", body: snapshot.state == "authenticated" ? "有线网络认证成功。" : "有线网络认证失败，请打开程序查看状态。")
         }
     }
-    func updateStatusItem(_ state: String) {
-        let label = state == "unavailable" ? "服务未连接" : DesktopState.label(state)
-        statusItem?.button?.image = NSImage(systemSymbolName: DesktopState.symbol(state), accessibilityDescription: label)
-            ?? NSImage(systemSymbolName: "network", accessibilityDescription: label)
-        statusItem?.button?.image?.isTemplate = true
+    func makeIconMenu() -> NSMenuItem {
+        let parent = NSMenuItem(title: "菜单栏图标", action: nil, keyEquivalent: "")
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        for (tag, label) in [(0, "单色 · 跟随系统"), (1, "彩色 · Windows 配色")] {
+            let item = NSMenuItem(title: label, action: #selector(changeIconMode(_:)), keyEquivalent: "")
+            item.tag = tag
+            item.target = self
+            menu.addItem(item)
+            iconModeItems.append(item)
+        }
+        parent.submenu = menu
+        syncIconMode()
+        return parent
+    }
+    func syncIconMode() {
+        let selected = UserDefaults.standard.bool(forKey: "coloredStatusIcon") ? 1 : 0
+        for item in iconModeItems { item.state = item.tag == selected ? .on : .off }
+    }
+    @objc func changeIconMode(_ sender: NSMenuItem) {
+        UserDefaults.standard.set(sender.tag == 1, forKey: "coloredStatusIcon")
+        syncIconMode()
+        redrawStatusIcon()
+    }
+    func redrawStatusIcon() {
+        guard let button = statusItem?.button else { return }
+        let colored = UserDefaults.standard.bool(forKey: "coloredStatusIcon")
+        button.effectiveAppearance.performAsCurrentDrawingAppearance {
+            button.image = StatusIcon.image(currentMark, colored: colored)
+            button.alternateImage = StatusIcon.image(currentMark, colored: colored, highlighted: true)
+        }
+    }
+    func updateStatusItem(_ state: String, message: String = "") {
+        currentMark = StatusMark.resolve(state: state, message: message)
+        redrawStatusIcon()
+        let label = currentMark.label
         statusItem?.button?.toolTip = "SYSU NetAuth · \(label)"
         statusItem?.button?.setAccessibilityLabel("SYSU NetAuth · \(label)")
         menuStatus?.title = "SYSU NetAuth · \(label)"

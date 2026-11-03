@@ -65,6 +65,16 @@ import Foundation
   precondition(!DesktopState.hideAtLaunch(loginLaunch: true, hideEnabled: false))
   precondition(DesktopState.hideAtLaunch(loginLaunch: true, hideEnabled: true))
   precondition(DesktopState.symbol("failed") != DesktopState.symbol("idle"))
-  print("31 offline checks passed; no service or network accessed")
+  precondition(StatusMark.resolve(state: "idle") == .ready)
+  precondition(StatusMark.resolve(state: "idle", message: "已断开") == .disconnected)
+  precondition(StatusMark.resolve(state: "stopped") == .disconnected)
+  precondition(StatusMark.resolve(state: "authenticating") == .authenticating)
+  precondition(StatusMark.resolve(state: "authenticated") == .authenticated)
+  precondition(StatusMark.resolve(state: "failed") == .failed)
+  precondition(StatusMark.resolve(state: "unknown") == .unavailable)
+  precondition(StatusMark.authenticated.colorName == "green")
+  precondition(StatusMark.failed.colorName == "red")
+  precondition(Set(StatusMark.allCases.map(\.label)).count == 6)
+  print("41 offline checks passed; no service or network accessed")
  }
 }
