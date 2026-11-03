@@ -505,7 +505,7 @@ dependencies = [
 
 [[package]]
 name = "sysu-netauth"
-version = "0.7.0"
+version = "0.7.0-beta.2"
 dependencies = [
  "anyhow",
  "clap",

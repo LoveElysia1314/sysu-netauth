@@ -1,4 +1,4 @@
-{ Shared by both installers. All layouts below are for 32-bit Inno Setup 6. }
+{ Service lifecycle helpers. Layouts below are for 32-bit Inno Setup 6. }
 #ifndef ManagedServiceName
   #define ManagedServiceName "SYSUNetAuth"
 #endif
@@ -220,7 +220,7 @@ begin
     finally
       ManagedCloseService(Service);
     end;
-    { Includes foreground services and PyInstaller parent/child processes. }
+    { Includes foreground services and processes in other Windows sessions. }
     Result := CloseManagedImages(True, Error);
     if Result then Log('Authentication service and application processes have stopped');
   finally
