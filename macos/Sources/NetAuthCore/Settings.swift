@@ -29,10 +29,10 @@ public extension Client {
         "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    func save(_ settings: Settings, authorized: Bool) throws -> Data {
+    func save(_ settings: Settings, authorized: Bool, connect: Bool = false) throws -> Data {
         if #available(macOS 13, *), authorized, dataDirectory == nil,
            ProcessInfo.processInfo.environment["NETAUTH_CLI"] == nil {
-            return try Helper.call("set_config", payload: JSONEncoder().encode(settings))
+            return try Helper.call(connect ? "connect" : "set_config", payload: JSONEncoder().encode(settings))
         }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
@@ -41,7 +41,9 @@ public extension Client {
         let file = directory.appendingPathComponent("settings.json")
         try JSONEncoder().encode(settings).write(to: file, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-        return try execute(arguments: arguments(for: .config) + ["import", file.path],
+        let arguments = connect ? self.arguments(for: .connect) + [file.path]
+                                : self.arguments(for: .config) + ["import", file.path]
+        return try execute(arguments: arguments,
                            authorized: authorized)
     }
 }

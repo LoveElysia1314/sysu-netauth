@@ -6,7 +6,7 @@
 cargo build --locked --release
 ```
 
-安装包和压缩包的版本来自 Git 标签。依赖锁定在 `Cargo.lock`；发行工具使用 Python 3.11+ 标准库。
+程序版本统一读取 `Cargo.toml`。发行标签必须与包版本一致，并指向当前提交。依赖锁定在 `Cargo.lock`；发行工具使用 Python 3.11+ 标准库。
 
 ## Windows
 

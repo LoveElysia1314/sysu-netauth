@@ -47,6 +47,18 @@ impl Default for Config {
     }
 }
 impl Config {
+    pub fn validate_auth(&self) -> Result<()> {
+        self.validate()?;
+        ensure!(
+            !self.username.is_empty() && !self.password.is_empty(),
+            "需要配置 NetID 和密码"
+        );
+        ensure!(
+            self.iface_mode != "manual" || !self.iface.is_empty(),
+            "请选择网卡"
+        );
+        Ok(())
+    }
     pub fn validate(&self) -> Result<()> {
         ensure!(
             ["auto", "manual"].contains(&self.iface_mode.as_str()),
@@ -69,9 +81,7 @@ impl Config {
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Cache {
-    pub iface: String,
-    pub last_success_mac: String,
-    pub manual_selector: String,
+    pub last_success_id: String,
 }
 
 #[derive(Clone)]

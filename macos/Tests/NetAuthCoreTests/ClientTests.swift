@@ -26,7 +26,7 @@ final class ClientTests: XCTestCase {
     }
 
     func testSnapshotContract() throws {
-        let data = Data(#"{"state":"idle","message":"ready","internet":false,"adapter":null,"adapters":[],"update":{}}"#.utf8)
+        let data = Data(#"{"state":"idle","message":"ready","internet":false,"adapter":null,"adapters":[],"update":{},"suspended":false,"manual_disconnect":false}"#.utf8)
         let snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
         XCTAssertEqual(snapshot.state, "idle")
         XCTAssertNil(snapshot.adapter)
@@ -49,10 +49,32 @@ final class ClientTests: XCTestCase {
     }
 
     func testMockCLI() throws {
-        try withMock("[ \"$1\" = --json ] && [ \"$2\" = status ] || exit 2\nprintf '{\"state\":\"idle\",\"message\":\"mock\",\"internet\":false,\"adapter\":null}'\n") { client in
+        let json = #"{"state":"idle","message":"mock","internet":false,"adapter":null,"adapters":[],"suspended":false,"manual_disconnect":false}"#
+        try withMock("[ \"$1\" = --json ] && [ \"$2\" = status ] || exit 2\nprintf '%s' '" + json + "'\n") { client in
             let snapshot = try JSONDecoder().decode(Snapshot.self, from: client.run(.status))
             XCTAssertEqual(snapshot.message, "mock")
         }
+    }
+
+    func testConnectUsesOneCLIRequestWithPrivateSettingsFile() throws {
+        try withMock("[ \"$1\" = --json ] && [ \"$2\" = connect ] && [ -f \"$3\" ] || exit 2\ncat \"$3\"\n") { client in
+            var settings = Settings()
+            settings.username = "example-user"
+            let data = try client.save(settings, authorized: false, connect: true)
+            XCTAssertEqual(try JSONDecoder().decode(Settings.self, from: data).username, "example-user")
+        }
+    }
+
+    func testAdapterSelectionKeepsIdentityAcrossRenameAndUnplug() throws {
+        let initial = Data(#"[{"id":"device","name":"en5","ipv4":"192.0.2.1","ethernet":true,"up":true}]"#.utf8)
+        let selected = try JSONDecoder().decode([Adapter].self, from: initial)[0]
+        let renamed = try JSONDecoder().decode([Adapter].self, from: Data(#"[{"id":"device","name":"en6","ipv4":"192.0.2.1","ethernet":true,"up":true}]"#.utf8))
+        XCTAssertEqual(AdapterSelection.refresh(renamed, selected: selected)[0].name, "en6")
+        let missing = AdapterSelection.refresh([], selected: selected)
+        XCTAssertEqual(missing[0].id, "device")
+        XCTAssertFalse(missing[0].up)
+        XCTAssertEqual(missing[0].ipv4, "")
+        XCTAssertEqual(AdapterSelection.refresh(renamed, selected: missing[0]).count, 1)
     }
 
     func testServiceError() throws {

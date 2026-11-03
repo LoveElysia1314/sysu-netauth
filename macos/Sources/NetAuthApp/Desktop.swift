@@ -67,6 +67,7 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
                 switch result {
                 case .success(let snapshot): self.applySnapshot(snapshot)
                 case .failure(let error):
+                    self.noticeTimer?.invalidate()
                     self.updateStatusItem("unavailable")
                     self.status.stringValue = "服务未连接"
                     self.status.textColor = .systemOrange
@@ -76,11 +77,25 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
         }
     }
     func applySnapshot(_ snapshot: Snapshot) {
+        refreshAdapters(snapshot.adapters)
         observeDesktop(snapshot)
         status.stringValue = DesktopState.label(snapshot.state)
         status.textColor = snapshot.state == "authenticated" ? .systemGreen : .labelColor
         details.stringValue = String(snapshot.message.prefix(140))
-        if let adapter = snapshot.adapter { showNetwork(adapter) }
+        showNetwork(snapshot.adapter)
+    }
+    func refreshAdapters(_ all: [Adapter]) {
+        let selected = manual.state == .on && detected.indices.contains(interface.indexOfSelectedItem)
+            ? detected[interface.indexOfSelectedItem] : nil
+        let items = AdapterSelection.refresh(all, selected: selected)
+        guard items != detected else { return }
+        detected = items
+        interface.removeAllItems()
+        interface.addItems(withTitles: items.isEmpty ? ["未发现有线网卡"] : items.map { $0.up ? $0.name : "\($0.name)（未连接）" })
+        if let selected = selected, let index = items.firstIndex(where: { $0.id == selected.id }) {
+            interface.selectItem(at: index)
+        }
+        selectMode()
     }
     func syncLoginStatus() {
         if #available(macOS 13, *) {
@@ -113,6 +128,7 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
     @objc func changeHidden() { UserDefaults.standard.set(hidden.state == .on, forKey: "hideOnLogin") }
     @objc func changeNotifications() {
         if notify.state == .off {
+            noticeTimer?.invalidate()
             UserDefaults.standard.set(false, forKey: "stateNotifications")
             UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
             return
@@ -164,9 +180,19 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
     }
     func observeDesktop(_ snapshot: Snapshot) {
         updateStatusItem(snapshot.state, message: snapshot.message)
-        if notices.observe(snapshot.state, enabled: notify.state == .on, now: ProcessInfo.processInfo.systemUptime) {
-            // Do not put account details or service error messages on the lock screen.
-            postNotification(title: "SYSU NetAuth", body: snapshot.state == "authenticated" ? "有线网络认证成功。" : "有线网络认证失败，请打开程序查看状态。")
+        let now = ProcessInfo.processInfo.systemUptime
+        if let notice = notices.observe(snapshot.state, paused: snapshot.suspended || snapshot.manual_disconnect,
+                                        enabled: notify.state == .on, now: now) {
+            postNotification(title: "SYSU NetAuth", body: notice.message(state: snapshot.state))
+        }
+        noticeTimer?.invalidate()
+        if notify.state == .on, let deadline = notices.deadline {
+            noticeTimer = Timer.scheduledTimer(withTimeInterval: max(0.01, deadline - now), repeats: false) { [weak self] _ in
+                guard let self = self else { return }
+                if let notice = self.notices.poll(enabled: self.notify.state == .on, now: ProcessInfo.processInfo.systemUptime) {
+                    self.postNotification(title: "SYSU NetAuth", body: notice.message(state: snapshot.state))
+                }
+            }
         }
     }
     func makeIconMenu() -> NSMenuItem {

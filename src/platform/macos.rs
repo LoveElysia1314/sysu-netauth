@@ -366,6 +366,11 @@ pub fn adapters() -> Result<Vec<Adapter>> {
         adapter.score = if adapter.up { 30 } else { 0 } + if adapter.ethernet { 20 } else { -100 };
     }
     system::network_details(&mut result);
+    for adapter in &mut result {
+        if adapter.mac != [0; 6] {
+            adapter.id = crate::protocol::mac_text(adapter.mac);
+        }
+    }
     result.sort_by_key(|a| std::cmp::Reverse(a.score));
     Ok(result)
 }

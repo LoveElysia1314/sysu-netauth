@@ -4,7 +4,7 @@ import json
 import sys
 
 adapter = {
-    "name": "en5 (模拟)", "ipv4": "192.0.2.10", "up": True,
+    "id": "00:01:02:03:04:05", "name": "en5 (模拟)", "ipv4": "192.0.2.10", "up": True,
     "ethernet": True,
 }
 action = sys.argv[-1]
@@ -12,7 +12,7 @@ if action == "interfaces":
     print(json.dumps([adapter]))
 elif action in ("status", "authenticate", "logoff"):
     print(json.dumps({
-        "state": "idle", "internet": False, "adapter": adapter,
+        "state": "idle", "internet": False, "adapter": adapter, "adapters": [adapter], "suspended": False, "manual_disconnect": False,
         "message": "离线模拟：仅验证界面与调用流程，未进行校园网认证。",
     }))
 else:

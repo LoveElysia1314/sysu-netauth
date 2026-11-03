@@ -1,22 +1,53 @@
 import Foundation
 
-/// Mirrors the Windows notification policy, using monotonic elapsed time.
+public enum ConnectionNotice: Equatable {
+    case currentState, disconnected, recovered
+    public func message(state: String) -> String {
+        switch self {
+        case .currentState: return state == "authenticated" ? "已认证，互联网连通" : "认证失败，请打开程序查看详情。"
+        case .disconnected: return "连接已中断，请检查网络或认证设置。"
+        case .recovered: return "连接已恢复，互联网连通。"
+        }
+    }
+}
+
+/// One five-second outage deadline, matching the Windows policy.
 public struct StateNotifications {
     private var previous: String?
-    private var last: [String: TimeInterval] = [:]
+    private var manual = false
+    private var outage: TimeInterval?
+    private var warned = false
     public init() {}
-    public mutating func observe(_ state: String, enabled: Bool, now: TimeInterval) -> Bool {
-        defer { previous = state }
-        guard enabled, let previous = previous, previous != state else { return false }
-        let cooldown: TimeInterval
-        switch state {
-        case "authenticated": cooldown = 180
-        case "failed": cooldown = 300
-        default: return false
+    public mutating func connectRequested() { manual = true }
+    public mutating func cancelConnectRequest() { manual = false }
+    public var deadline: TimeInterval? { warned ? nil : outage.map { $0 + 5 } }
+    public mutating func observe(_ state: String, paused: Bool = false, enabled: Bool, now: TimeInterval) -> ConnectionNotice? {
+        let before = previous
+        previous = state
+        if paused { outage = nil; manual = false; warned = false; return nil }
+        if state == "authenticated" {
+            let since = outage
+            outage = nil
+            warned = false
+            guard let before = before, before != state else { return nil }
+            let requested = manual
+            manual = false
+            guard enabled else { return nil }
+            if requested { return .currentState }
+            guard let since = since else { return .currentState }
+            return now - since >= 5 ? .recovered : nil
         }
-        if let time = last[state], now - time < cooldown { return false }
-        last[state] = now
-        return true
+        if before == "authenticated" && !manual { outage = now; warned = false }
+        if outage == nil, state == "failed", let before = before, before != state {
+            manual = false
+            return enabled ? .currentState : nil
+        }
+        return poll(enabled: enabled, now: now)
+    }
+    public mutating func poll(enabled: Bool, now: TimeInterval) -> ConnectionNotice? {
+        guard enabled, !warned, let since = outage, now - since >= 5 else { return nil }
+        warned = true
+        return .disconnected
     }
 }
 

@@ -27,6 +27,7 @@ pub enum Action {
     Logoff,
     GetConfig,
     SetConfig { config: Config },
+    Connect { config: Config },
     ReloadConfig,
     CheckUpdate,
 }

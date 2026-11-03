@@ -1,13 +1,14 @@
 import Foundation
 
-public struct Adapter: Decodable {
+public struct Adapter: Decodable, Equatable {
+    public let id: String
     public let name: String
-    public let ipv4: String
+    public var ipv4: String
     public let ethernet: Bool
-    public let up: Bool
+    public var up: Bool
     public let driver: String?
-    public let gateway: String?
-    public let dns: String?
+    public var gateway: String?
+    public var dns: String?
     public let mac: [UInt8]?
 }
 
@@ -16,10 +17,27 @@ public struct Snapshot: Decodable {
     public let message: String
     public let internet: Bool
     public let adapter: Adapter?
+    public let adapters: [Adapter]
+    public let suspended: Bool
+    public let manual_disconnect: Bool
+}
+
+public enum AdapterSelection {
+    public static func refresh(_ all: [Adapter], selected: Adapter?) -> [Adapter] {
+        var items = all.filter(\.ethernet)
+        if var missing = selected, !items.contains(where: { $0.id == missing.id }) {
+            missing.up = false
+            missing.ipv4 = ""
+            missing.gateway = nil
+            missing.dns = nil
+            items.append(missing)
+        }
+        return items
+    }
 }
 
 public enum Action: String {
-    case interfaces, status, authenticate, logoff, config
+    case interfaces, status, authenticate, logoff, config, connect
 }
 
 public enum ClientError: LocalizedError {

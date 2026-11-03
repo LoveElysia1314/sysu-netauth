@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -17,6 +18,14 @@ versioning = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(versioning)
 
 
+def set_package_version(root, version):
+    manifest = root / "Cargo.toml"
+    contents, count = re.subn(r'(?m)^version = "[^"]+"$', f'version = "{version}"',
+                              manifest.read_text(encoding="utf-8"), count=1)
+    assert count == 1
+    manifest.write_text(contents, encoding="utf-8")
+
+
 class ReleaseVersionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="netauth version ")
@@ -26,6 +35,7 @@ class ReleaseVersionTests(unittest.TestCase):
             target = self.root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / relative, target)
+        set_package_version(self.root, "0.7.0-alpha.0")
         self.git("init", "-q")
         self.git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "fixture")
 
@@ -56,6 +66,13 @@ class ReleaseVersionTests(unittest.TestCase):
         with patch.dict(os.environ, {"NETAUTH_RELEASE_TAG": "", "GITHUB_REF_TYPE": "", "GITHUB_REF_NAME": ""}):
             with self.assertRaisesRegex(ValueError, "exactly one"):
                 versioning.resolve(self.root)
+
+    def test_release_tag_must_match_the_compiled_package_version(self):
+        self.git("tag", "v0.7.0-beta.2")
+        with self.assertRaisesRegex(ValueError, "Cargo.toml"):
+            versioning.resolve(self.root, "v0.7.0-beta.2")
+        set_package_version(self.root, "0.7.0-beta.2")
+        self.assertEqual(versioning.resolve(self.root, "v0.7.0-beta.2")["version"], "0.7.0-beta.2")
 
     def test_metadata_generation_does_not_rewrite_tracked_versions(self):
         self.git("tag", "v0.7.0-alpha.0")

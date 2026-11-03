@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var menuStatus: NSMenuItem?
     var menuActions: [NSMenuItem] = []
     var pollTimer: Timer?
+    var noticeTimer: Timer?
     var pollInFlight = false
     var statusGeneration = 0
     var notices = StateNotifications()
@@ -175,7 +176,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func connect() {
         if !username.stringValue.isEmpty || !password.stringValue.isEmpty {
             saveSettings(connectAfter: true)
-        } else { runAction(.authenticate, authorized: !demo) }
+        } else {
+            notices.connectRequested()
+            runAction(.authenticate, authorized: !demo)
+        }
     }
     @objc func disconnect() { runAction(.logoff, authorized: !demo) }
     @objc func save() { saveSettings(connectAfter: false) }
@@ -186,7 +190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             footer.stringValue = "请填写 NetID 与密码，重试间隔需为 15–3600 秒。"
             return
         }
-        guard manual.state != .on || !detected.isEmpty else {
+        guard manual.state != .on || detected.indices.contains(interface.indexOfSelectedItem) else {
             footer.stringValue = "没有可手动选择的以太网接口。"
             return
         }
@@ -200,29 +204,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.desktop_notify = notify.state == .on
         if manual.state == .on {
             settings.iface_mode = "manual"
-            settings.iface = detected[max(0, interface.indexOfSelectedItem)].name
+            settings.iface = detected[interface.indexOfSelectedItem].id
         }
         if demo {
             footer.stringValue = "离线模拟：设置校验通过，未保存凭据或联系服务。"
             return
         }
         setBusy(true)
+        if connectAfter { notices.connectRequested() }
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try self.client.save(settings, authorized: true) }
+            let result = Result { () throws -> Snapshot? in
+                let data = try self.client.save(settings, authorized: true, connect: connectAfter)
+                if connectAfter { return try JSONDecoder().decode(Snapshot.self, from: data) }
+                return nil
+            }
             DispatchQueue.main.async {
                 self.setBusy(false)
                 switch result {
-                case .success:
+                case .success(let snapshot):
                     self.footer.stringValue = "设置已保存至后台服务。"
-                    if connectAfter { self.runAction(.authenticate, authorized: true) }
-                case .failure(let error): self.footer.stringValue = String(error.localizedDescription.prefix(240))
+                    if let snapshot = snapshot { self.applySnapshot(snapshot) }
+                case .failure(let error):
+                    self.notices.cancelConnectRequest()
+                    self.footer.stringValue = String(error.localizedDescription.prefix(240))
                 }
             }
         }
     }
     func setBusy(_ value: Bool) {
         busy = value
-        if value { statusGeneration += 1 }
+        if value { statusGeneration += 1; noticeTimer?.invalidate() }
         buttons.forEach { $0.isEnabled = !value }
         menuActions.forEach { $0.isEnabled = !value }
         [username, password, retry].forEach { $0.isEnabled = !value }
@@ -233,27 +244,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func runAction(_ action: Action?, authorized: Bool) {
         guard !busy else { return }
         setBusy(true)
-        let selected = interface.titleOfSelectedItem
         DispatchQueue.global(qos: .userInitiated).async {
-            let adapters = Result { try JSONDecoder().decode([Adapter].self, from: self.client.run(.interfaces)) }
             let result = Result { () throws -> Snapshot in
                 let data = try self.client.run(action ?? .status, authorized: authorized)
                 return try JSONDecoder().decode(Snapshot.self, from: data)
             }
             DispatchQueue.main.async {
-                switch adapters {
-                case .success(let items):
-                    self.detected = items.filter(\.ethernet)
-                    self.interface.removeAllItems()
-                    self.interface.addItems(withTitles: self.detected.isEmpty ? ["未发现有线网卡"] : self.detected.map(\.name))
-                    if let selected = selected, self.interface.itemTitles.contains(selected) { self.interface.selectItem(withTitle: selected) }
-                    self.showNetwork(self.detected.first)
-                case .failure(let error): self.network.stringValue = String(error.localizedDescription.prefix(180))
-                }
                 switch result {
                 case .success(let snapshot):
                     self.applySnapshot(snapshot)
                 case .failure(let error):
+                    if action == .authenticate { self.notices.cancelConnectRequest() }
+                    self.noticeTimer?.invalidate()
                     self.updateStatusItem("unavailable")
                     self.status.stringValue = "操作未完成"
                     self.status.textColor = .systemOrange

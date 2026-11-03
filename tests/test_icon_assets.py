@@ -6,6 +6,8 @@ import re
 import struct
 import unittest
 import zlib
+import tempfile
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 module = importlib.util.spec_from_file_location('generate_icons', ROOT / 'scripts/generate-icons.py')
@@ -13,11 +15,20 @@ generator = importlib.util.module_from_spec(module)
 module.loader.exec_module(generator)
 
 class IconAssetsTests(unittest.TestCase):
+    def test_source_line_endings_do_not_change_generated_geometry_or_provenance(self):
+        expected = generator.outputs()
+        manifest = generator.windows_manifest()
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / 'source.json'
+            source.write_bytes(generator.source_bytes().replace(b'\n', b'\r\n'))
+            with patch.object(generator, 'SOURCE', source):
+                self.assertEqual(generator.outputs(), expected)
+                self.assertEqual(generator.windows_manifest(), manifest)
     def test_generated_text_and_provenance(self):
         for path, expected in generator.outputs().items():
             with self.subTest(path=path.name):
-                self.assertEqual(path.read_text(), expected)
-        manifest = json.loads((generator.GENERATED/'windows/manifest.json').read_text())
+                self.assertEqual(path.read_text(encoding='utf-8'), expected)
+        manifest = json.loads((generator.GENERATED/'windows/manifest.json').read_text(encoding='utf-8'))
         self.assertEqual(manifest, generator.windows_manifest())
         self.assertEqual(len(manifest['files']), 7)
 
@@ -49,12 +60,12 @@ class IconAssetsTests(unittest.TestCase):
                 self.assertEqual(expected_offset, len(data))
 
     def test_windows_resource_ids_preserve_existing_state_mapping(self):
-        rc = (ROOT/'packaging/windows.rc').read_text()
+        rc = (ROOT/'packaging/windows.rc').read_text(encoding='utf-8')
         actual = {int(i): p for i,p in re.findall(r'(\d+) ICON "([^"]+)"', rc)}
         for index, name in enumerate(['app','ready','disconnected','authenticated','authenticating','failed','unavailable'],1):
             self.assertEqual(actual[index], f'../assets/icons/generated/windows/{name}.ico')
             self.assertTrue((ROOT/'packaging'/actual[index]).is_file())
-        installer = (ROOT/'scripts/setup.template.iss').read_text()
+        installer = (ROOT/'scripts/setup.template.iss').read_text(encoding='utf-8')
         self.assertIn('SetupIconFile=..\\assets\\icons\\generated\\windows\\app.ico', installer)
         self.assertFalse((ROOT/'assets/icon-ethernet.ico').exists())
 

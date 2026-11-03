@@ -44,9 +44,9 @@ sysu_netauth logoff --iface eth0
 | --- | --- | --- |
 | `username`, `password` | 空 | NetID 和密码，需可编码为 GBK |
 | `iface_mode` | `auto` | `auto` 自动选择，`manual` 固定网卡 |
-| `iface` | 空 | 网卡名称或设备 ID；Windows 界面保存设备 ID |
+| `iface` | 空 | `interfaces --json` 返回的设备 ID；Windows 为系统设备 ID，Linux/macOS 为 MAC 地址 |
 | `auto_auth` | `true` | 自动认证及失败重试 |
-| `retry_interval` | `60` | 常规重试间隔，范围为 15–3600 秒 |
+| `retry_interval` | `60` | 失败重试间隔的上限，范围为 15–3600 秒 |
 | `service_mode` | `true` | Windows 服务独立运行 |
 | `launch_gui_on_login` | `false` | Windows 登录时启动界面 |
 | `hide_window_on_login` | `true` | 登录启动时隐藏窗口 |
@@ -54,7 +54,11 @@ sysu_netauth logoff --iface eth0
 
 未指定的字段使用默认值。设置包含明文凭据，应限制文件访问权限。
 
+自动认证失败后，按 3、6、12、24 秒逐步延长重试间隔，直到达到 `retry_interval`；网络故障不会因累计次数过多而永久停止恢复。凭据不完整等配置问题等待设置修正，未连接的网卡等待网络事件。手动断开在当前服务运行期间保持，插拔和唤醒不改变此选择；重新启动服务时按自动认证设置执行。
+
 ## 更新规则
+
+GUI 使用 `connect <配置文件>` 将保存设置和重新连接合并为一个请求，避免配置变化与手动连接分别启动认证。配置文件应保持私有权限。
 
 程序只接受正式版更新清单。测试版和较低版本不会触发更新提醒；例如 `0.7.0-beta.2` 可收到 `0.7.0` 正式版提醒，但不会提示安装 `0.7.0-beta.3` 或 `0.6.3`。
 

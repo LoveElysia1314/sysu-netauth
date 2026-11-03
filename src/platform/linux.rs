@@ -201,6 +201,9 @@ pub fn adapters() -> Result<Vec<Adapter>> {
         .join(", ");
     for a in &mut result {
         a.dns = dns.clone();
+        if a.mac != [0; 6] {
+            a.id = crate::protocol::mac_text(a.mac);
+        }
     }
     result.sort_by_key(|a| std::cmp::Reverse(a.score));
     Ok(result)

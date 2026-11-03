@@ -85,29 +85,28 @@ pub fn version(value: &str) -> Result<[u32; 3]> {
     );
     Ok([values[0], values[1], values[2]])
 }
-fn version_key(value: &str) -> Result<([u32; 3], u8, u32)> {
+fn installed_version(value: &str) -> Result<([u32; 3], bool)> {
     let Some((core, suffix)) = value.split_once('-') else {
-        return Ok((version(value)?, 3, 0));
+        return Ok((version(value)?, false));
     };
     let (stage, serial) = suffix
         .split_once('.')
         .ok_or_else(|| anyhow::anyhow!("invalid prerelease"))?;
-    let rank = match stage {
-        "alpha" => 0,
-        "beta" => 1,
-        "rc" => 2,
-        _ => bail!("invalid prerelease stage"),
-    };
+    ensure!(
+        matches!(stage, "alpha" | "beta" | "rc"),
+        "invalid prerelease stage"
+    );
     ensure!(
         !serial.is_empty() && serial.bytes().all(|b| b.is_ascii_digit()),
         "invalid prerelease number"
     );
-    Ok((version(core)?, rank, serial.parse()?))
+    Ok((version(core)?, true))
 }
 fn available_for(candidate: &str, current: &str) -> Result<bool> {
     // Candidate releases are always stable. A beta client can discover its final release.
     let stable = version(candidate)?;
-    Ok((stable, 3, 0) > version_key(current)?)
+    let (installed, prerelease) = installed_version(current)?;
+    Ok(stable > installed || (stable == installed && prerelease))
 }
 pub fn safe_url(url: &str, hosts: &[&str]) -> bool {
     let Some(tail) = url.strip_prefix("https://") else {
@@ -334,20 +333,15 @@ mod tests {
         ));
     }
     #[test]
-    fn prerelease_ordering() {
-        let ordered = [
-            "0.7.0-alpha.0",
-            "0.7.0-alpha.1",
-            "0.7.0-beta.0",
-            "0.7.0-rc.1",
-            "0.7.0",
-            "0.7.1-alpha.0",
-        ];
-        for pair in ordered.windows(2) {
-            assert!(version_key(pair[0]).unwrap() < version_key(pair[1]).unwrap());
+    fn any_installed_prerelease_can_discover_its_final_release() {
+        for stage in ["alpha.0", "alpha.1", "beta.2", "rc.1"] {
+            let current = format!("0.7.0-{stage}");
+            assert!(available_for("0.7.0", &current).unwrap());
+            assert!(!available_for("0.6.9", &current).unwrap());
         }
-        assert!(version("0.7.0-alpha.0").is_err());
-        assert!(version_key("0.7.0-unknown.1").is_err());
+        for current in ["0.7.0-unknown.1", "0.7.0-beta.x", "0.7.0-beta."] {
+            assert!(available_for("0.7.0", current).is_err());
+        }
     }
     #[test]
     fn manifest_validation() {

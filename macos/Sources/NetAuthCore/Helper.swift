@@ -27,10 +27,10 @@ public enum Helper {
         return "cdhash H\"\(hash)\""
     }
     public static func encodeRequest(_ action: String, payload: Data?) throws -> Data {
-        guard ["status", "authenticate", "logoff", "set_config"].contains(action),
+        guard ["status", "authenticate", "logoff", "set_config", "connect"].contains(action),
               (payload?.count ?? 0) <= 60000 else { throw ClientError.failed("不允许的 helper 请求") }
         var request: [String: Any] = ["version": 1, "id": 1, "action": action]
-        if action == "set_config" {
+        if action == "set_config" || action == "connect" {
             guard let payload = payload,
                   let config = try JSONSerialization.jsonObject(with: payload) as? [String: Any] else { throw ClientError.failed("无效配置") }
             request["config"] = config

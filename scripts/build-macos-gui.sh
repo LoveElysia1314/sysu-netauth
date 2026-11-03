@@ -9,6 +9,8 @@ bin_dir=$(swift build --package-path macos --build-system native -c release "$@"
 app=dist/SYSUNetAuth.app
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 rust_bin=${CARGO_TARGET_DIR:-target}/release
+version=$("$rust_bin/sysu_netauth" --version | awk '{print $2}')
+core_version=${version%%-*}
 install -m755 "$rust_bin/sysu_netauth" "$rust_bin/sysu_netauth_service" "$app/Contents/Resources/"
 install -m755 scripts/install-macos.sh scripts/uninstall-macos.sh "$app/Contents/Resources/"
 install -m644 scripts/launchd-common.sh packaging/io.github.peterrobot.sysu-netauth.plist "$app/Contents/Resources/"
@@ -29,6 +31,8 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $core_version" "$app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $core_version" "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist"
 for binary in SYSUNetAuthHelper sysu_netauth sysu_netauth_service; do
     codesign --force --options runtime --sign - "$app/Contents/Resources/$binary"
