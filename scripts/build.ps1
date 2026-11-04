@@ -27,7 +27,7 @@ if (-not $output.StartsWith($distRoot + [IO.Path]::DirectorySeparatorChar, [Stri
 }
 if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Recurse -Force }
 New-Item -ItemType Directory -Force $output | Out-Null
-foreach ($executable in 'sysu_netauth', 'sysu_netauth_service', 'sysu_netauth_gui') {
+foreach ($executable in 'sysu_netauth', 'sysu_netauth_service', 'sysu_netauth_gui', 'sysu_netauth_notify') {
     Copy-Item (Join-Path $releaseDir "$executable.exe") $output
 }
 if (-not $SkipInstaller) {

@@ -1,6 +1,8 @@
 #!/bin/sh
 set -eu
 [ "${3:-/}" = / ] || { echo 'Install on the running system volume.' >&2; exit 1; }
+console_uid=$(/usr/bin/stat -f %u /dev/console)
+/bin/launchctl bootout "gui/$console_uid/io.github.peterrobot.sysu-netauth.notifications" 2>/dev/null || true
 for process in $(pgrep -f '^/Applications/SYSUNetAuth.app/Contents/MacOS/SYSUNetAuth([[:space:]]|$)' || true); do
     kill -TERM "$process" 2>/dev/null || true
 done

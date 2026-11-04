@@ -30,6 +30,15 @@ pub struct Update {
     pub checking: bool,
 }
 impl Update {
+    pub fn announcement(&self) -> Option<String> {
+        (self.available && safe_url(&self.release_url, RELEASE_HOSTS)).then(|| {
+            format!(
+                "发现正式版更新 {}：{}",
+                self.latest_version, self.release_url
+            )
+        })
+    }
+
     /// Availability belongs to the installed version, not the version that wrote the cache.
     pub fn for_current_version(mut self, current: &str) -> Self {
         self.checking = false;

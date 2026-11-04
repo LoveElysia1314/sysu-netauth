@@ -27,7 +27,7 @@ public enum Helper {
         return "cdhash H\"\(hash)\""
     }
     public static func encodeRequest(_ action: String, payload: Data?) throws -> Data {
-        guard ["status", "authenticate", "logoff", "set_config", "connect", "preferences", "diagnostics"].contains(action),
+        guard ["status", "authenticate", "logoff", "set_config", "connect", "preferences", "diagnostics", "check_update"].contains(action),
               (payload?.count ?? 0) <= 60000 else { throw ClientError.failed("不允许的 helper 请求") }
         var request: [String: Any] = ["version": 1, "id": 1, "action": action]
         if action == "set_config" || action == "connect" {

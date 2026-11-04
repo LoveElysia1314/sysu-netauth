@@ -23,6 +23,7 @@ install -m755 scripts/install-macos.sh scripts/uninstall-macos.sh "$app/Contents
 install -m644 scripts/launchd-common.sh packaging/io.github.peterrobot.sysu-netauth.plist "$app/Contents/Resources/"
 install -m755 "$bin_dir/SYSUNetAuthHelper" "$app/Contents/Resources/SYSUNetAuthHelper"
 install -m644 packaging/io.github.peterrobot.sysu-netauth.gui-helper.plist "$app/Contents/Resources/"
+install -m644 packaging/io.github.peterrobot.sysu-netauth.notifications.plist "$app/Contents/Resources/"
 install -m755 "$bin_dir/SYSUNetAuth" "$app/Contents/MacOS/SYSUNetAuth"
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

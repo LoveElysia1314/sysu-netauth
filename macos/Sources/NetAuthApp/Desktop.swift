@@ -7,6 +7,7 @@ import NetAuthArtwork
 
 extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
     func configureDesktop() {
+        showWindowObserver = DistributedNotificationCenter.default().addObserver(forName: .init("io.github.peterrobot.sysu-netauth.show-window"), object: String(getuid()), queue: .main) { [weak self] _ in self?.showWindow() }
         window.delegate = self
         window.isReleasedWhenClosed = false
         UNUserNotificationCenter.current().delegate = self
@@ -26,6 +27,7 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
             if selector != #selector(showWindow) { menuActions.append(entry) }
         }
         menu.addItem(makeIconMenu())
+        menu.addItem(makeUpdateMenu())
         menu.addItem(.separator())
         let test = NSMenuItem(title: "发送离线测试通知", action: #selector(testNotification), keyEquivalent: "")
         test.target = self
@@ -53,6 +55,7 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
         hidden.state = UserDefaults.standard.object(forKey: "hideOnLogin") == nil || UserDefaults.standard.bool(forKey: "hideOnLogin") ? .on : .off
         notify.state = UserDefaults.standard.bool(forKey: "stateNotifications") ? .on : .off
         syncLoginStatus()
+        if !demo, let executable = Bundle.main.executableURL { try? NotificationAgentLease.start(executable: executable) }
         if !demo, #available(macOS 13, *) {
             pollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
                 self?.pollStatus()
@@ -62,6 +65,7 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
     }
     func pollStatus() {
         guard !busy, !pollInFlight else { return }
+        if notificationsOnly { notify.state = UserDefaults.standard.bool(forKey: "stateNotifications") ? .on : .off }
         pollInFlight = true
         let generation = statusGeneration
         DispatchQueue.global(qos: .utility).async {
@@ -72,6 +76,7 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
                 switch result {
                 case .success(let snapshot): self.applySnapshot(snapshot)
                 case .failure(let error):
+                    self.connectionRequest = nil
                     self.noticeTimer?.invalidate()
                     self.updateStatusItem("unavailable")
                     self.status.stringValue = "服务未连接"
@@ -82,6 +87,8 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
         }
     }
     func applySnapshot(_ snapshot: Snapshot) {
+        applyUpdate(snapshot.update)
+        if notificationsOnly { observeDesktop(snapshot); return }
         refreshAdapters(snapshot.adapters)
         observeDesktop(snapshot)
         status.stringValue = DesktopState.label(snapshot.state)
@@ -135,7 +142,7 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
         if notify.state == .off {
             noticeTimer?.invalidate()
             UserDefaults.standard.set(false, forKey: "stateNotifications")
-            UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["sysu-netauth-state"])
             return
         }
         notify.state = .off
@@ -150,7 +157,7 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
         }
     }
     func postNotification(title: String, body: String, reportResult: Bool = false) {
-        guard notify.state == .on else { return }
+        guard notify.state == .on, ownsNotifications else { return }
         let center = UNUserNotificationCenter.current()
         center.getNotificationSettings { settings in
             guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
@@ -181,17 +188,26 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
     }
     @objc func testNotification() {
         guard notify.state == .on else { footer.stringValue = "请先启用“认证状态变化后通知”并允许通知权限。"; showWindow(); return }
+        if !ownsNotifications {
+            DistributedNotificationCenter.default().postNotificationName(.init("io.github.peterrobot.sysu-netauth.notification-test"), object: String(getuid()), userInfo: nil, deliverImmediately: true)
+            footer.stringValue = "离线测试已交给独立通知助手。"
+            return
+        }
         postNotification(title: "SYSU NetAuth · 离线测试", body: "这是本机通知测试，未进行校园网认证。", reportResult: true)
     }
     func observeDesktop(_ snapshot: Snapshot) {
-        updateStatusItem(snapshot.state, message: snapshot.message)
+        if let current = snapshot.connection_request {
+            if let previous = connectionRequest, previous != current, current != 0 { notices.serviceConnectRequested(current: snapshot.state) }
+            connectionRequest = current
+        }
+        if !notificationsOnly { updateStatusItem(snapshot.state, message: snapshot.message) }
         let now = ProcessInfo.processInfo.systemUptime
         if let notice = notices.observe(snapshot.state, paused: snapshot.suspended || snapshot.manual_disconnect,
-                                        enabled: notify.state == .on, now: now) {
+                                        enabled: notify.state == .on && ownsNotifications, now: now) {
             postNotification(title: "SYSU NetAuth", body: notice.message(state: snapshot.state))
         }
         noticeTimer?.invalidate()
-        if notify.state == .on, let deadline = notices.deadline {
+        if notify.state == .on && ownsNotifications, let deadline = notices.deadline {
             noticeTimer = Timer.scheduledTimer(withTimeInterval: max(0.01, deadline - now), repeats: false) { [weak self] _ in
                 guard let self = self else { return }
                 if let notice = self.notices.poll(enabled: self.notify.state == .on, now: ProcessInfo.processInfo.systemUptime) {
@@ -249,6 +265,10 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
         menuStatus?.title = "SYSU NetAuth · \(label)"
     }
     @objc func showWindow() {
+        if notificationsOnly {
+            if let executable = Bundle.main.executableURL { try? NotificationAgentLease.launch(executable: executable) }
+            return
+        }
         NSApp.setActivationPolicy(.regular)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -273,6 +293,8 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
     }
     func applicationWillTerminate(_ notification: Notification) {
         pollTimer?.invalidate(); noticeTimer?.invalidate(); iconAppearanceObserver?.invalidate()
+        if let observer = notificationTestObserver { DistributedNotificationCenter.default().removeObserver(observer) }
+        if let observer = showWindowObserver { DistributedNotificationCenter.default().removeObserver(observer) }
     }
     func shouldStartHidden() -> Bool {
         let event = NSAppleEventManager.shared().currentAppleEvent
@@ -286,6 +308,11 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        DispatchQueue.main.async { self.showWindow(); completionHandler() }
+        DispatchQueue.main.async {
+            if let value = response.notification.request.content.userInfo["releaseURL"] as? String,
+               let url = ReleaseUpdate.trustedURL(value) { NSWorkspace.shared.open(url) }
+            else { self.showWindow() }
+            completionHandler()
+        }
     }
 }

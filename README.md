@@ -1,8 +1,8 @@
 # SYSU NetAuth
 
-中山大学有线校园网 802.1X / EAP-MD5 自动认证客户端。Windows 提供 Win32 原生界面，macOS 提供 AppKit 原生界面，两端均不依赖 Qt；Linux 提供命令行。各平台通过独立后台服务保持认证。
+中山大学有线校园网 802.1X / EAP-MD5 自动认证客户端。Windows 提供 Win32 原生界面，macOS 提供 AppKit 原生界面，Linux 提供命令行。各平台通过独立后台服务保持认证。
 
-当前正式版为 **v0.7.0**，从[发布页](https://github.com/LoveElysia1314/sysu-netauth/releases/tag/v0.7.0)下载。Windows 支持在界面中检查正式版更新。
+当前正式版为 **v0.7.1**，从[发布页](https://github.com/LoveElysia1314/sysu-netauth/releases/tag/v0.7.1)下载。Windows 和 macOS 可查看正式版更新及对应版本的说明。
 
 ## 下载与安装
 
@@ -29,7 +29,8 @@ macOS 的构建、签名和授权说明见[原生界面开发文档](macos/READM
 - 持续响应交换机的重新认证请求，自动处理断线和 Windows 睡眠、休眠恢复。
 - 网卡插拔时更新选择列表，保留尚未保存的选择。
 - Windows 界面跟随系统浅色或深色主题，提供托盘状态、登录启动和通知选项。
-- 后台检查正式版更新，支持手动检查、查看发布说明和忽略指定版本。
+- 后台检查正式版更新；Windows 和 macOS 可手动检查、查看发布说明或忽略版本，Linux 在命令行状态中提示更新。
+- Windows 和 macOS 13+ 提供独立通知助手，退出状态程序后仍可接收联网状态及正式版更新提醒。
 
 程序负责有线认证，IP 地址和 DHCP 由系统网络管理器处理。使用前请退出其他 802.1X 客户端。
 
@@ -45,4 +46,4 @@ cargo build --locked --release
 
 Windows 构建需要 Visual Studio C++ 工具和 Windows SDK；制作安装包还需要 Inno Setup 6。各平台的依赖、输出目录和交叉编译方法见[构建文档](docs/BUILDING.md)。
 
-版本说明见 [GitHub Releases](https://github.com/LoveElysia1314/sysu-netauth/releases)。
+版本说明见[更新日志](CHANGELOG.md)，安装包见 [GitHub Releases](https://github.com/LoveElysia1314/sysu-netauth/releases)。

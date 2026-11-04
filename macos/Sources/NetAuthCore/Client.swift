@@ -20,6 +20,8 @@ public struct Snapshot: Decodable {
     public let adapters: [Adapter]
     public let suspended: Bool
     public let manual_disconnect: Bool
+    public let connection_request: UInt64?
+    public let update: ReleaseUpdate?
 }
 
 public enum AdapterSelection {
@@ -38,6 +40,7 @@ public enum AdapterSelection {
 
 public enum Action: String {
     case interfaces, status, authenticate, logoff, config, connect, preferences, diagnostics
+    case checkUpdate = "check-update"
 }
 
 public enum ClientError: LocalizedError {
@@ -67,8 +70,8 @@ public struct Client {
     public func run(_ action: Action, timeout: TimeInterval = 15, authorized: Bool = false) throws -> Data {
         if #available(macOS 13, *), authorized, dataDirectory == nil,
            ProcessInfo.processInfo.environment["NETAUTH_CLI"] == nil,
-           [.status, .authenticate, .logoff, .preferences, .diagnostics].contains(action) {
-            return try Helper.call(action.rawValue)
+           [.status, .authenticate, .logoff, .preferences, .diagnostics, .checkUpdate].contains(action) {
+            return try Helper.call(action == .checkUpdate ? "check_update" : action.rawValue)
         }
         return try execute(arguments: arguments(for: action), timeout: timeout, authorized: authorized)
     }

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "version": "0.7.0",
-  "published_at": "2026-11-04T09:10:51+08:00",
-  "release_url": "https://github.com/LoveElysia1314/sysu-netauth/releases/tag/v0.7.0",
-  "summary": "原生有线认证、Windows 与 macOS 原生界面、独立后台服务；改进断线恢复、通知和日志诊断。",
+  "version": "0.7.1",
+  "published_at": "2026-11-04T10:11:20+08:00",
+  "release_url": "https://github.com/LoveElysia1314/sysu-netauth/releases/tag/v0.7.1",
+  "summary": "增加独立通知助手：Windows、macOS 13+ 退出状态程序后仍可接收联网和更新提醒；Linux 增加状态及日志更新提示，发布说明统一取自更新日志。",
   "channel": "stable"
 }

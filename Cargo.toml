@@ -1,6 +1,6 @@
 [package]
 name = "sysu-netauth"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 rust-version = "1.88"
 
@@ -18,6 +18,10 @@ path = "src/bin/service.rs"
 [[bin]]
 name = "sysu_netauth_gui"
 path = "src/bin/gui.rs"
+
+[[bin]]
+name = "sysu_netauth_notify"
+path = "src/bin/notify.rs"
 
 [dependencies]
 anyhow = "1"

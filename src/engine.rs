@@ -98,6 +98,8 @@ pub struct Snapshot {
     pub state: State,
     pub suspended: bool,
     pub manual_disconnect: bool,
+    #[serde(default)]
+    pub connection_request: u64,
     pub message: String,
     pub adapter: Option<Adapter>,
     pub adapters: Vec<Adapter>,
@@ -171,6 +173,7 @@ impl Engine {
                 state: State::Idle,
                 suspended: false,
                 manual_disconnect: false,
+                connection_request: 0,
                 message: error.unwrap_or_else(|| "待命".into()),
                 adapter: None,
                 adapters: Vec::new(),
@@ -627,10 +630,14 @@ impl Engine {
     }
     fn connect(&mut self) -> Result<()> {
         ensure!(!self.suspended, "系统休眠中");
+        self.snapshot.connection_request = self.snapshot.connection_request.wrapping_add(1).max(1);
         self.manual_disconnect = false;
         self.retry_attempt = 0;
-        self.authenticate()
-            .inspect_err(|error| self.status(State::Failed, error.to_string()))
+        let result = self
+            .authenticate()
+            .inspect_err(|error| self.status(State::Failed, error.to_string()));
+        self.publish();
+        result
     }
     fn apply_config(&mut self, config: Config) -> Result<()> {
         let changed = self.config.username != config.username
@@ -659,6 +666,7 @@ impl Engine {
         {
             self.failed(&error.to_string());
         }
+        self.publish();
         Ok(())
     }
     fn logoff(&mut self) -> Result<()> {
@@ -804,6 +812,12 @@ impl Engine {
                 match result {
                     Ok(mut update) => {
                         update.retain_newer_release(&self.snapshot.update);
+                        if (!self.snapshot.update.available
+                            || update.latest_version != self.snapshot.update.latest_version)
+                            && let Some(notice) = update.announcement()
+                        {
+                            crate::diagnostics::record(&self.paths, &notice);
+                        }
                         update.next_check_at = now + 86400 + (std::process::id() as u64 % 1800);
                         self.snapshot.update = update;
                     }
@@ -1372,6 +1386,7 @@ mod tests {
         };
         e.save_config(config.clone(), true).unwrap();
         assert_eq!(e.generation, 2);
+        assert_eq!(e.snapshot.connection_request, 1);
         assert!(!e.manual_disconnect);
         assert_eq!(e.config, config);
         e.reload_changed_config();
@@ -1381,6 +1396,43 @@ mod tests {
         e.save_config(e.config.clone(), true).unwrap();
         assert!(!e.manual_disconnect);
         assert_eq!(e.generation, 5);
+        assert_eq!(e.snapshot.connection_request, 2);
+        std::fs::remove_dir_all(&e.paths.state).unwrap();
+    }
+    #[test]
+    fn a_discovered_release_is_logged_once_and_a_newer_release_is_logged_again() {
+        let mut e = engine();
+        let release = Update {
+            latest_version: "99.0.0".into(),
+            release_url: "https://github.com/LoveElysia1314/sysu-netauth/releases/tag/v99.0.0"
+                .into(),
+            available: true,
+            ..Default::default()
+        };
+        e.handle(Event::Update(Ok(release.clone())));
+        e.handle(Event::Update(Ok(release)));
+        let path = e.paths.state.join("service.log");
+        assert_eq!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .matches("发现正式版更新")
+                .count(),
+            1
+        );
+        e.handle(Event::Update(Ok(Update {
+            latest_version: "100.0.0".into(),
+            release_url: "https://github.com/LoveElysia1314/sysu-netauth/releases/tag/v100.0.0"
+                .into(),
+            available: true,
+            ..Default::default()
+        })));
+        assert_eq!(
+            std::fs::read_to_string(path)
+                .unwrap()
+                .matches("发现正式版更新")
+                .count(),
+            2
+        );
         std::fs::remove_dir_all(&e.paths.state).unwrap();
     }
 }

@@ -19,6 +19,10 @@ public struct StateNotifications {
     private var warned = false
     public init() {}
     public mutating func connectRequested() { manual = true }
+    public mutating func serviceConnectRequested(current: String) {
+        manual = true
+        if current == "authenticated" || current == "failed" { previous = "authenticating" }
+    }
     public mutating func cancelConnectRequest() { manual = false }
     public var deadline: TimeInterval? { warned ? nil : outage.map { $0 + 5 } }
     public mutating func observe(_ state: String, paused: Bool = false, enabled: Bool, now: TimeInterval) -> ConnectionNotice? {

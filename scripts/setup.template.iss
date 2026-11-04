@@ -59,6 +59,7 @@ Name: "chinesesimplified"; MessagesFile: "Languages\ChineseSimplified.isl"
 Source: "{#AppSourceDir}\sysu_netauth.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#AppSourceDir}\sysu_netauth_service.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#AppSourceDir}\sysu_netauth_gui.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "{#AppSourceDir}\sysu_netauth_notify.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\docs\WINDOWS.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
@@ -72,6 +73,7 @@ Name: "{autodesktop}\SYSU NetAuth"; Filename: "{app}\sysu_netauth_gui.exe"
 
 [Run]
 Filename: "{app}\sysu_netauth_gui.exe"; Description: "启动 SYSU NetAuth"; Flags: nowait postinstall skipifsilent runascurrentuser
+Filename: "ms-settings:appsfeatures"; Description: "打开应用列表，检查是否卸载旧 Npcap（其他软件可能仍需要）"; Flags: shellexec postinstall unchecked skipifsilent; Check: OfferLegacyDriverCleanup
 
 [Code]
 const
@@ -81,11 +83,19 @@ const
 #include "windows/process.iss"
 #include "windows/service.iss"
 #include "windows/data.iss"
+#include "windows/legacy-driver.iss"
 
 var
   ExistingInstallDir: String;
+  LegacyDriverDetected: Boolean;
+
+function OfferLegacyDriverCleanup: Boolean;
+begin
+  Result := LegacyDriverDetected;
+end;
 
 function InitializeSetup: Boolean;
+var PreviousVersion: String;
 begin
   Result := IsAdminInstallMode;
   if not Result then begin
@@ -95,6 +105,11 @@ begin
   if not RegQueryStringValue(HKLM64, UninstallKey, 'InstallLocation', ExistingInstallDir) then
     RegQueryStringValue(HKLM32, UninstallKey, 'InstallLocation', ExistingInstallDir);
   if not DirExists(ExistingInstallDir) then ExistingInstallDir := '';
+  if not RegQueryStringValue(HKLM64, UninstallKey, 'DisplayVersion', PreviousVersion) then
+    RegQueryStringValue(HKLM32, UninstallKey, 'DisplayVersion', PreviousVersion);
+  LegacyDriverDetected := (ExistingInstallDir <> '') and LegacyDriverCleanup(PreviousVersion,
+    RegKeyExists(HKLM64, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\NpcapInst') or
+    RegKeyExists(HKLM32, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\NpcapInst'));
 end;
 
 procedure InitializeWizard;
@@ -124,8 +139,11 @@ begin
 end;
 
 procedure DeinitializeSetup;
+var Code: Integer;
 begin
   RestoreManagedStart;
+  if FileExists(ExpandConstant('{app}\sysu_netauth_notify.exe')) then
+    RunSetupCommand(ExpandConstant('{sys}\schtasks.exe'), '/Run /TN "SYSUNetAuth Notifications"', 15, Code);
 end;
 
 procedure DeinitializeUninstall;
@@ -175,6 +193,9 @@ begin
     else
       Log('Windows 服务启动失败或已在运行，代码：' + IntToStr(Code));
     SetPath(True);
+    SetupStage('正在注册独立通知助手…');
+    if not RunSetupCommand(ExpandConstant('{app}\sysu_netauth_notify.exe'), '--install', 30, Code) or (Code <> 0) then
+      RaiseException('通知助手注册失败或超时，错误码：' + IntToStr(Code));
   end;
 end;
 
@@ -195,6 +216,7 @@ begin
       Abort;
     end;
     RunSetupCommand(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "SYSUNetAuth GUI" /F', 15, Code);
+    RunSetupCommand(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "SYSUNetAuth Notifications" /F', 15, Code);
     SetPath(False);
     SharedData := ExpandConstant('{commonappdata}\SYSUNetAuth');
     if (not UninstallSilent) and

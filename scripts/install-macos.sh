@@ -52,4 +52,11 @@ if [ -f "$base/SYSUNetAuthHelper" ] && [ -n "${1:-}" ]; then
     install -o root -g wheel -m644 "$base/$helper_label.plist" "/Library/LaunchDaemons/$helper_label.plist"
     /bin/launchctl enable "system/$helper_label"
     /bin/launchctl bootstrap system "/Library/LaunchDaemons/$helper_label.plist"
+    notification_label=io.github.peterrobot.sysu-netauth.notifications
+    /bin/launchctl bootout "gui/$gui_uid/$notification_label" 2>/dev/null || true
+    install -d -o root -g wheel -m755 /Library/LaunchAgents
+    install -o root -g wheel -m644 "$base/$notification_label.plist" "/Library/LaunchAgents/$notification_label.plist"
+    if ! /bin/launchctl bootstrap "gui/$gui_uid" "/Library/LaunchAgents/$notification_label.plist"; then
+        echo 'Notification assistant will start at the next graphical login.' >&2
+    fi
 fi

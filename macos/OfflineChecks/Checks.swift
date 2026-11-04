@@ -48,7 +48,7 @@ import Foundation
     do { _ = try Helper.encodeRequest(action, payload: payload); fatalError("request accepted") } catch { }
   }
   precondition(!settings.desktop_notify && !settings.launch_gui_on_login && settings.hide_window_on_login && settings.service_mode)
-  for action in ["preferences", "diagnostics"] {
+  for action in ["preferences", "diagnostics", "check_update"] {
    _ = try Helper.encodeRequest(action, payload: nil)
    rejects(action, Data("{}".utf8))
   }

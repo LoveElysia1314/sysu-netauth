@@ -16,7 +16,7 @@ cargo build --locked --release
 ./scripts/build.ps1 -SkipInstaller
 ```
 
-输出为 `dist/sysu_netauth/` 中的 CLI、GUI 和服务三个 EXE。安装 Inno Setup 6 后，省略 `-SkipInstaller` 可同时生成 Setup 安装包。服务注册和启动方式见 [Windows 文档](WINDOWS.md)。
+输出为 `dist/sysu_netauth/` 中的 CLI、GUI、服务和通知助手四个 EXE。安装 Inno Setup 6 后，省略 `-SkipInstaller` 可同时生成 Setup 安装包。服务注册和启动方式见 [Windows 文档](WINDOWS.md)。
 
 脚本默认使用 Rust 主机架构。交叉构建 ARM64 还需安装 VS 的 ARM64 C++ 工具与对应 Rust 目标：
 

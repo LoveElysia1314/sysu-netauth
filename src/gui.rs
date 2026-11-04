@@ -28,7 +28,7 @@ use windows_sys::Win32::{
     },
 };
 mod adapters;
-mod notifications;
+pub(crate) mod notifications;
 mod theme;
 use notifications::StateNotifications;
 use theme::Theme;
@@ -119,7 +119,7 @@ struct Window {
     taskbar_created: u32,
     colored_icons: bool,
 }
-fn resource_icon(id: u16, fallback: *const u16) -> HICON {
+pub(crate) fn resource_icon(id: u16, fallback: *const u16) -> HICON {
     let icon = unsafe { LoadIconW(GetModuleHandleW(ptr::null()), id as usize as *const u16) };
     if icon.is_null() {
         unsafe { LoadIconW(ptr::null_mut(), fallback) }
@@ -776,7 +776,7 @@ impl Window {
         true
     }
     fn notice(&mut self, title: &str, message: &str) {
-        if !self.config.desktop_notify {
+        if crate::notify::running() || (title == "SYSU NetAuth" && !self.config.desktop_notify) {
             return;
         }
         self.tray.uFlags = NIF_INFO;
@@ -867,7 +867,10 @@ impl Window {
                 self.update,
                 &format!("可更新至 {}：{}", update.latest_version, update.summary),
             );
-            if self.notified_version != update.latest_version {
+            if !crate::notify::running()
+                && !crate::notify::update_was_notified(&update.latest_version)
+                && self.notified_version != update.latest_version
+            {
                 self.notice(
                     "SYSU NetAuth 更新",
                     &format!("发现新版本 {}", update.latest_version),
@@ -1332,6 +1335,9 @@ pub fn run() -> Result<()> {
         };
         ensure!(result as usize > 32, "需要管理员权限连接后台服务");
         return Ok(());
+    }
+    if let Err(error) = crate::notify::ensure_running() {
+        eprintln!("notification assistant: {error}");
     }
     let name = wide(r"Local\SYSUNetAuth-GUI-v1");
     let mutex = unsafe { CreateMutexW(ptr::null(), 0, name.as_ptr()) };

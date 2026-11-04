@@ -170,6 +170,8 @@ jobs:
           --macos-x64-input dist/macos-x64/sysu-netauth-macos-x64.pkg
           --macos-x64-metadata dist/macos-x64/sysu-netauth-macos-x64.pkg.metadata.json
           --output-dir dist/release-assets
+      - name: Generate matching release notes from the changelog
+        run: python3 scripts/release_notes.py --version "${{ needs.version.outputs.version }}" --output build/release-notes.md
       - name: Upload packages or create draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -186,5 +188,5 @@ jobs:
             gh release create "$RELEASE_TAG" dist/release-assets/* \
               --verify-tag --draft --title "SYSU NetAuth $RELEASE_TAG" \
               --prerelease="$PRERELEASE" \
-              --notes-file .github/release-notes.md
+              --notes-file build/release-notes.md
           fi

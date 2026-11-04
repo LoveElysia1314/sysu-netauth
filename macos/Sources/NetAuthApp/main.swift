@@ -29,6 +29,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var pollInFlight = false
     var statusGeneration = 0
     var notices = StateNotifications()
+    var connectionRequest: UInt64?
+    let notificationsOnly = CommandLine.arguments.contains("--notifications")
+    var notificationLease: NotificationAgentLease?
+    var interfaceLease: NotificationAgentLease?
+    var notificationTestObserver: NSObjectProtocol?
+    var showWindowObserver: NSObjectProtocol?
+    var releaseUpdate: ReleaseUpdate?
+    var updateRequestInFlight = false
+    var attemptedUpdateVersion = ""
+    var updateInfoItems: [NSMenuItem] = []
+    var updateReleaseItems: [NSMenuItem] = []
+    var updateIgnoreItems: [NSMenuItem] = []
     var currentMark: StatusMark = .ready
     var iconModeItems: [NSMenuItem] = []
     var iconAppearanceObserver: NSKeyValueObservation?
@@ -75,6 +87,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return box
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if notificationsOnly {
+            do {
+                guard let lease = try NotificationAgentLease.acquire() else { NSApp.terminate(nil); return }
+                notificationLease = lease
+                configureNotificationAgent()
+            } catch { NSApp.terminate(nil) }
+            return
+        }
+        do {
+            guard let lease = try NotificationAgentLease.acquire(name: "interface") else {
+                DistributedNotificationCenter.default().postNotificationName(.init("io.github.peterrobot.sysu-netauth.show-window"), object: String(getuid()), userInfo: nil, deliverImmediately: true)
+                NSApp.terminate(nil)
+                return
+            }
+            interfaceLease = lease
+        } catch { NSApp.terminate(nil); return }
         if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"), let icon = NSImage(contentsOf: url) {
             NSApp.applicationIconImage = icon
         }
@@ -89,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         close.target = self
         appMenu.addItem(close)
         appMenu.addItem(makeIconMenu())
+        appMenu.addItem(makeUpdateMenu())
         appMenu.addItem(.separator())
         let test = NSMenuItem(title: "发送离线测试通知", action: #selector(testNotification), keyEquivalent: "t")
         test.keyEquivalentModifierMask = [.command, .shift]
@@ -107,7 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         password.identifier = NSUserInterfaceItemIdentifier("password")
         autoAuth.state = .on
         login.toolTip = "当前系统用户进入桌面后运行；不影响后台服务自动认证。"
-        notify.toolTip = "需要界面程序驻留菜单栏，退出程序后不发送通知。"
+        notify.toolTip = "独立通知助手负责发送，退出状态程序后仍然有效。"
         interface.addItem(withTitle: "自动探测有线网卡")
         manual.target = self
         manual.action = #selector(selectMode)
@@ -311,5 +340,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 let application = NSApplication.shared
 let delegate = AppDelegate()
 application.delegate = delegate
-application.setActivationPolicy(.regular)
+application.setActivationPolicy(delegate.notificationsOnly ? .accessory : .regular)
 application.run()

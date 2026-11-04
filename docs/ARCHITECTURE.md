@@ -33,7 +33,7 @@ Windows 服务通过 SCM 接收电源事件，唤醒后重新打开抓包并认�
 
 消息由四字节大端长度和 UTF-8 JSON 组成，上限为 65,536 字节。请求包含 `version: 1`、`id` 和 `action`；响应包含 `version`、`id`、`ok`、可选的 `error` 以及 `data`。
 
-操作包括 `status`、`watch`、`interfaces`、`authenticate`、`connect`、`logoff`、`get_config`、`set_config`、`reload_config` 和 `check_update`。`connect` 保存配置并启动一次认证，供 GUI 的“重新连接”使用。每个连接处理一次请求，`watch` 在首次响应后持续推送快照。最多同时处理 16 个客户端，每个订阅者最多缓存八条快照；处理过慢的订阅者会断开。
+操作包括 `status`、`watch`、`interfaces`、`authenticate`、`connect`、`logoff`、`get_config`、`set_config`、`reload_config`、`preferences`、`diagnostics` 和 `check_update`。`connect` 保存配置并启动一次认证，供 GUI 的“重新连接”使用。每个连接处理一次请求，`watch` 在首次响应后持续推送快照。最多同时处理 16 个客户端，每个订阅者最多缓存八条快照；处理过慢的订阅者会断开。
 
 ## 正式版更新
 

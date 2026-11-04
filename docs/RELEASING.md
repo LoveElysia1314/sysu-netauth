@@ -23,7 +23,7 @@ Windows x64、Windows ARM64、Linux x64、macOS Apple Silicon 和 macOS Intel �
 | macOS Apple Silicon | `SYSUNetAuth_macos_arm64_v<version>.pkg` | `SHA256SUMS-macos-arm64.txt` |
 | macOS Intel | `SYSUNetAuth_macos_x64_v<version>.pkg` | `SHA256SUMS-macos-x64.txt` |
 
-Windows 安装程序包含界面、CLI 和后台服务。macOS PKG 包含完整应用、CLI、服务和授权 helper。Linux 压缩包包含 CLI、服务、systemd 单元和需要 root 执行的安装脚本。
+Windows 安装程序包含界面、CLI、后台服务和通知助手。macOS PKG 包含完整应用、CLI、服务、授权 helper 和通知助手的 LaunchAgent。Linux 压缩包包含 CLI、服务、systemd 单元和需要 root 执行的安装脚本。
 
 ## 本地打包
 
@@ -40,4 +40,6 @@ ARM64 构建使用 `-Target aarch64-pc-windows-msvc`，将元数据复制到 `di
 
 macOS 使用 `sh scripts/build-macos.sh`。PKG 与 `.pkg.metadata.json` 在同一构建中生成，后者包含提交、版本、目标架构和安装包摘要；只对外发布 PKG 和校验清单。Apple Silicon 与 Intel 分别完成构建和安装、升级、卸载测试。
 
-发行工具校验标签与包版本一致、标签准确指向当前提交，并检查各平台元数据和摘要。版本说明维护在 [GitHub Releases](https://github.com/LoveElysia1314/sysu-netauth/releases)。
+发行工具校验标签与包版本一致、标签准确指向当前提交，并检查各平台元数据和摘要。安装包发布于 [GitHub Releases](https://github.com/LoveElysia1314/sysu-netauth/releases)。
+
+正式版更新内容统一维护在根目录 [CHANGELOG.md](../CHANGELOG.md)。每版使用独立的稳定版本号标题，发布流程通过 `scripts/release_notes.py` 提取对应章节作为 Release 正文；缺少章节、重复版本或混入测试版条目都会阻止发布。客户端更新提醒中的“查看新版说明”打开该版本的发布页。

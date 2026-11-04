@@ -20,6 +20,9 @@ for attempt in 1 2; do
         exit 1
     fi
     codesign --verify --strict /Applications/SYSUNetAuth.app
+    if [ "$(stat -f %u /dev/console)" != 0 ]; then
+        sudo test -f /Library/LaunchAgents/io.github.peterrobot.sysu-netauth.notifications.plist
+    fi
     remaining=20
     until sudo /usr/local/bin/sysu_netauth status --json > "$RUNNER_TEMP/pkg-status.json"; do
         remaining=$((remaining - 1)); [ "$remaining" -gt 0 ] || exit 1; sleep 1
@@ -28,6 +31,7 @@ for attempt in 1 2; do
     sudo /usr/local/bin/sysu_netauth config | grep -q ci-settings-preserved
 done
 sudo sh "$resources/uninstall-macos.sh"
+sudo test ! -e /Library/LaunchAgents/io.github.peterrobot.sysu-netauth.notifications.plist
 sudo test -f "$data/config.json"
 if sudo launchctl print system/io.github.peterrobot.sysu-netauth >/dev/null 2>&1; then exit 1; fi
 echo 'PASS: macOS package install, upgrade, settings preservation and service removal'

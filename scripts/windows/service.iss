@@ -5,6 +5,9 @@
 #ifndef ManagedGuiName
   #define ManagedGuiName "sysu_netauth_gui.exe"
 #endif
+#ifndef ManagedNotifyName
+  #define ManagedNotifyName "sysu_netauth_notify.exe"
+#endif
 #ifndef ManagedCliName
   #define ManagedCliName "sysu_netauth.exe"
 #endif
@@ -125,6 +128,7 @@ begin
         Name := Name + Chr(Entry.Exe[I]);
       end;
       if (CompareText(Name, '{#ManagedGuiName}') = 0) or
+        (CompareText(Name, '{#ManagedNotifyName}') = 0) or
         (CompareText(Name, '{#ManagedCliName}') = 0) or
         (IncludeService and (CompareText(Name, '{#ManagedServiceExe}') = 0)) then
         if not CloseManagedProcess(Entry.ProcessId, Error) then Exit;

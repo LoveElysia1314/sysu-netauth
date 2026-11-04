@@ -4,13 +4,13 @@ use std::time::{Duration, Instant};
 const OUTAGE_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Notice {
+pub(crate) enum Notice {
     CurrentState,
     Disconnected,
     Recovered,
 }
 impl Notice {
-    pub(super) fn message(self, current_status: &str) -> &str {
+    pub(crate) fn message(self, current_status: &str) -> &str {
         match self {
             Self::CurrentState => current_status,
             Self::Disconnected => "连接已中断，请检查网络或认证设置",
@@ -26,20 +26,27 @@ struct Outage {
 
 /// Keep one five-second deadline across every retry in an established connection's outage.
 #[derive(Default)]
-pub(super) struct StateNotifications {
+pub(crate) struct StateNotifications {
     previous: Option<State>,
     manual_connect: bool,
     outage: Option<Outage>,
 }
 impl StateNotifications {
-    pub(super) fn connect_requested(&mut self) {
+    pub(crate) fn connect_requested(&mut self) {
         self.manual_connect = true;
     }
-    pub(super) fn cancel_connect_request(&mut self) {
+    pub(crate) fn service_connect_requested(&mut self, current: &State) {
+        self.connect_requested();
+        // Polling can first see an explicit request after its result is ready.
+        if matches!(current, State::Authenticated | State::Failed) {
+            self.previous = Some(State::Authenticating);
+        }
+    }
+    pub(crate) fn cancel_connect_request(&mut self) {
         self.manual_connect = false;
     }
 
-    pub(super) fn observe(
+    pub(crate) fn observe(
         &mut self,
         current: &State,
         paused: bool,
@@ -87,13 +94,13 @@ impl StateNotifications {
         self.poll(enabled, now)
     }
 
-    pub(super) fn deadline(&self, enabled: bool) -> Option<Instant> {
+    pub(crate) fn deadline(&self, enabled: bool) -> Option<Instant> {
         self.outage
             .as_ref()
             .filter(|outage| enabled && !outage.warned)
             .map(|outage| outage.since + OUTAGE_DELAY)
     }
-    pub(super) fn poll(&mut self, enabled: bool, now: Instant) -> Option<Notice> {
+    pub(crate) fn poll(&mut self, enabled: bool, now: Instant) -> Option<Notice> {
         let outage = self.outage.as_mut()?;
         if !enabled || outage.warned || now.duration_since(outage.since) < OUTAGE_DELAY {
             return None;
@@ -106,6 +113,24 @@ impl StateNotifications {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_requests_survive_a_fast_connection_with_no_intermediate_snapshot() {
+        let mut notices = StateNotifications::default();
+        let now = Instant::now();
+        assert_eq!(
+            notices.observe(&State::Authenticated, false, true, now),
+            None
+        );
+        notices.service_connect_requested(&State::Authenticated);
+        assert_eq!(
+            notices.observe(&State::Authenticated, false, true, now),
+            Some(Notice::CurrentState)
+        );
+        assert_eq!(
+            notices.observe(&State::Authenticated, false, true, now),
+            None
+        );
+    }
     struct Scenario {
         notices: StateNotifications,
         start: Instant,

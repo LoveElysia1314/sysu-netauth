@@ -15,7 +15,7 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(version = config::VERSION, about = "SYSU wired 802.1X client — Rust edition")]
+#[command(version = config::VERSION, about = "SYSU wired 802.1X authentication client")]
 struct Args {
     #[arg(long, global = true)]
     json: bool,
@@ -111,6 +111,9 @@ fn snapshot(s: &Snapshot, json: bool) -> Result<()> {
                 a.gateway,
                 a.dns
             );
+        }
+        if let Some(notice) = s.update.announcement() {
+            println!("{notice}");
         }
         Ok(())
     }
@@ -227,6 +230,7 @@ fn direct(
                         let s = Snapshot {
                             suspended: false,
                             manual_disconnect: false,
+                            connection_request: 0,
                             state: State::Authenticated,
                             message: "已认证，互联网连通".into(),
                             adapter: Some(adapter.clone()),

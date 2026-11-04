@@ -45,11 +45,11 @@ build_dir=${CARGO_TARGET_DIR:-target}/$target/release
 host_target=$(rustc -vV | sed -n 's/^host: //p')
 cargo run --locked --quiet --target "$host_target" --example verify_windows -- "$build_dir" "$arch"
 mkdir -p "$dist/sysu_netauth"
-for executable in sysu_netauth sysu_netauth_service sysu_netauth_gui; do
+for executable in sysu_netauth sysu_netauth_service sysu_netauth_gui sysu_netauth_notify; do
     install -m755 "$build_dir/$executable.exe" "$dist/sysu_netauth/$executable.exe"
 done
-# zip only the three binaries; icons and the GUI manifest are embedded.
+# zip only the four binaries; icons and the GUI manifest are embedded.
 archive=sysu-netauth-windows-$arch.zip
 rm -f "$dist/$archive"
-(cd "$dist" && zip -q -X "$archive" sysu_netauth/sysu_netauth.exe sysu_netauth/sysu_netauth_service.exe sysu_netauth/sysu_netauth_gui.exe)
+(cd "$dist" && zip -q -X "$archive" sysu_netauth/sysu_netauth.exe sysu_netauth/sysu_netauth_service.exe sysu_netauth/sysu_netauth_gui.exe sysu_netauth/sysu_netauth_notify.exe)
 echo "Windows release: $dist/$archive"

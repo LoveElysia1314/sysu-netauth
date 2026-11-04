@@ -34,6 +34,7 @@ class WindowsPackagingTests(unittest.TestCase):
             "scripts/windows/process.iss",
             "scripts/windows/service.iss",
             "scripts/windows/data.iss",
+            "scripts/windows/legacy-driver.iss",
 
         ):
             destination = self.root / relative
@@ -60,7 +61,7 @@ class WindowsPackagingTests(unittest.TestCase):
         struct.pack_into("<I", binary, 0x3c, 64)
         binary[64:68] = b"PE\0\0"
         struct.pack_into("<H", binary, 68, {"x64": 0x8664, "arm64": 0xaa64}[arch])
-        for name in ("sysu_netauth.exe", "sysu_netauth_service.exe", "sysu_netauth_gui.exe"):
+        for name in ("sysu_netauth.exe", "sysu_netauth_service.exe", "sysu_netauth_gui.exe", "sysu_netauth_notify.exe"):
             (self.source / name).write_bytes(binary)
 
     def compile(self, command, **kwargs):

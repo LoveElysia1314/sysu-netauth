@@ -18,6 +18,7 @@ Source: "{#TestBinary}"; DestDir: "{app}"; DestName: "{#ManagedCliName}"; Flags:
 Source: "{#TestPayload}"; DestDir: "{app}"; DestName: "payload.txt"; Flags: ignoreversion
 
 [Code]
+#define ManagedNotifyName "netauth-fixture-notify.exe"
 #include "../../scripts/windows/process.iss"
 #include "../../scripts/windows/service.iss"
 

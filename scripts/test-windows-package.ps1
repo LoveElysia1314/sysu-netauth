@@ -36,7 +36,7 @@ try {
     [IO.File]::WriteAllText($config, '{"auto_auth":false}')
     Install-Preview
     $native = Join-Path $install 'sysu_netauth.exe'
-    foreach ($name in @('sysu_netauth.exe','sysu_netauth_service.exe','sysu_netauth_gui.exe')) {
+    foreach ($name in @('sysu_netauth.exe','sysu_netauth_service.exe','sysu_netauth_gui.exe','sysu_netauth_notify.exe')) {
         $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes((Join-Path $install $name)))
         Assert ($text -notmatch '(?i)wpcap\.dll|pcap_open_live|pcap_sendpacket|npcap-1\.88\.exe') "$name contains the legacy packet backend"
     }
@@ -46,6 +46,8 @@ try {
     Assert ($LASTEXITCODE -eq 0) 'Native background service did not answer'
     $status = Get-Content (Join-Path $OutputDirectory 'status.json') -Raw | ConvertFrom-Json
     Assert ($status.state -eq 'idle') 'Offline installation unexpectedly authenticated'
+    $task = Get-ScheduledTask -TaskName 'SYSUNetAuth Notifications' -ErrorAction Stop
+    Assert ($task.Actions.Execute -like '*sysu_netauth_notify.exe*') 'Notification logon task targets an unexpected executable'
     'PASS: native-only payload, inbox driver dependency, service startup and idle status'
     Install-Preview
     & $native --json status > (Join-Path $OutputDirectory 'upgraded-status.json')
@@ -57,6 +59,7 @@ try {
         $process = Start-Process -FilePath (Join-Path $install 'unins000.exe') -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',('/LOG="'+$OutputDirectory+'\uninstall.log"')) -Wait -PassThru
         Assert ($process.ExitCode -eq 0) "Native uninstaller failed: $($process.ExitCode)"
         Assert (-not (Get-Service SYSUNetAuth -ErrorAction SilentlyContinue)) 'Uninstall left the preview service'
+        Assert (-not (Get-ScheduledTask -TaskName 'SYSUNetAuth Notifications' -ErrorAction SilentlyContinue)) 'Uninstall left the notification task'
         Assert (-not (Test-Path -LiteralPath (Join-Path $install 'sysu_netauth_service.exe'))) 'Uninstall left the preview executable'
         'PASS: native preview uninstall removes its service and executables'
     }

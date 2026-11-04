@@ -208,10 +208,15 @@ fn main() -> Result<()> {
     };
     ensure!(args.next().is_none(), "unexpected verifier argument");
     let dir = Path::new(&dir);
-    for name in ["sysu_netauth", "sysu_netauth_service", "sysu_netauth_gui"] {
+    for name in [
+        "sysu_netauth",
+        "sysu_netauth_service",
+        "sysu_netauth_gui",
+        "sysu_netauth_notify",
+    ] {
         verify(
             &dir.join(format!("{name}.exe")),
-            name.ends_with("gui"),
+            name.ends_with("gui") || name.ends_with("notify"),
             machine,
         )
         .with_context(|| format!("verify {name}"))?;

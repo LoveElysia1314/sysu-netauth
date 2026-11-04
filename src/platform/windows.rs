@@ -9,7 +9,7 @@ use std::{
     io::{self, Read, Write},
     mem,
     net::Ipv4Addr,
-    os::windows::ffi::OsStrExt,
+    os::windows::{ffi::OsStrExt, process::CommandExt},
     path::Path,
     ptr,
     sync::{Arc, Mutex, OnceLock},
@@ -962,6 +962,42 @@ pub fn set_login_task(enabled: bool) -> Result<()> {
         "cannot configure login task: {}",
         String::from_utf8_lossy(&status.stderr)
     );
+    Ok(())
+}
+pub fn set_notification_task(enabled: bool) -> Result<()> {
+    let exe = std::env::current_exe()?.with_file_name("sysu_netauth_notify.exe");
+    let mut command = std::process::Command::new("schtasks.exe");
+    command.creation_flags(CREATE_NO_WINDOW);
+    if enabled {
+        command.args([
+            "/Create",
+            "/TN",
+            "SYSUNetAuth Notifications",
+            "/TR",
+            &format!("\"{}\"", exe.display()),
+            "/SC",
+            "ONLOGON",
+            "/RL",
+            "HIGHEST",
+            "/IT",
+            "/F",
+        ]);
+    } else {
+        command.args(["/Delete", "/TN", "SYSUNetAuth Notifications", "/F"]);
+    }
+    let result = command.output()?;
+    ensure!(
+        result.status.success() || !enabled,
+        "cannot configure notification task: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    if enabled {
+        // The task runs in the logged-on user's interactive session, not Session 0.
+        let _ = std::process::Command::new("schtasks.exe")
+            .creation_flags(CREATE_NO_WINDOW)
+            .args(["/Run", "/TN", "SYSUNetAuth Notifications"])
+            .output()?;
+    }
     Ok(())
 }
 pub fn open_url(url: &str) {

@@ -38,6 +38,8 @@ sudo systemctl disable --now sysu-netauth
 
 重新启用服务：`sudo systemctl enable --now sysu-netauth`。查看连接日志：`sudo tail -n 40 /var/lib/sysu-netauth/service.log`。
 
+服务自动检查正式版更新。运行 `sudo sysu_netauth status` 时，会显示可用版本及发布说明链接；每个新版本首次被发现时也会写入连接日志。`--json` 输出继续提供结构化的 `update` 字段。当前压缩包通过安装脚本部署，升级时下载新版并再次安装；apt、dnf 等包管理器尚未管理此安装。
+
 升级时解压新版本并再次运行 `install-linux.sh`，安装脚本会停止服务、替换程序并重新启动。
 
 手动选卡、修改密码和直接认证等操作见[命令行与配置](CLI.md)。

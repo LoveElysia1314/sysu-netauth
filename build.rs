@@ -58,5 +58,9 @@ fn main() {
             "cargo:rustc-link-arg-bin=sysu_netauth_gui={}",
             out.display()
         );
+        println!(
+            "cargo:rustc-link-arg-bin=sysu_netauth_notify={}",
+            out.display()
+        );
     }
 }

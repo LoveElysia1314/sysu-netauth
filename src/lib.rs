@@ -7,6 +7,8 @@ pub mod engine;
 pub mod gui;
 pub mod ipc;
 pub mod native_eap;
+#[cfg(windows)]
+pub mod notify;
 pub mod platform;
 pub mod protocol;
 pub mod service;

@@ -17,7 +17,7 @@ host_target=$(rustc -vV | sed -n 's/^host: //p')
 cargo run --locked --quiet --target "$host_target" --example verify_windows -- "$build_dir"
 output=dist/gnu/sysu_netauth
 mkdir -p "$output"
-for executable in sysu_netauth sysu_netauth_service sysu_netauth_gui; do
+for executable in sysu_netauth sysu_netauth_service sysu_netauth_gui sysu_netauth_notify; do
     install -m755 "$build_dir/$executable.exe" "$output/$executable.exe"
 done
 archive=dist/sysu-netauth-windows-gnu-x64.zip

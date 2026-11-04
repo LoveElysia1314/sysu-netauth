@@ -55,7 +55,7 @@ def package(input_dir: Path, output_dir: Path, compiler: Path, *, arch: str = "x
         raise ValueError(f"Unsupported Windows architecture: {arch}")
     input_dir = input_dir.resolve(strict=True)
     output_dir = output_dir.resolve()
-    required = ["sysu_netauth.exe", "sysu_netauth_service.exe", "sysu_netauth_gui.exe"]
+    required = ["sysu_netauth.exe", "sysu_netauth_service.exe", "sysu_netauth_gui.exe", "sysu_netauth_notify.exe"]
     for name in required:
         binary = input_dir / name
         if not binary.is_file() or binary.stat().st_size == 0:
