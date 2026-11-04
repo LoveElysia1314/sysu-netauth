@@ -2,7 +2,7 @@
 
 中山大学有线校园网 802.1X / EAP-MD5 自动认证客户端。Windows 提供 Win32 原生界面，macOS 提供 AppKit 原生界面，两端均不依赖 Qt；Linux 提供命令行。各平台通过独立后台服务保持认证。
 
-当前版本为 **v0.7.0-beta.3**。程序内只检查正式版更新，测试版请从[发布页](https://github.com/LoveElysia1314/sysu-netauth/releases/tag/v0.7.0-beta.3)下载。
+当前正式版为 **v0.7.0**，从[发布页](https://github.com/LoveElysia1314/sysu-netauth/releases/tag/v0.7.0)下载。Windows 支持在界面中检查正式版更新。
 
 ## 下载与安装
 

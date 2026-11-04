@@ -1,13 +1,16 @@
-SYSU NetAuth v0.7.0-beta.3 测试版。
+SYSU NetAuth v0.7.0 正式版。
 
-- Windows 正式切换到系统自带 NDISUIO 原生认证，不再依赖 Npcap，也不包含旧认证后端或 EAPHost 验证分支。
-- macOS 原生界面随 PKG 安装包提供，包含菜单栏、后台服务和授权 helper；修复菜单栏图标反复重绘造成的高 CPU 占用。
-- 统一两端的界面启动、隐藏窗口和通知选项；后台服务独立运行，退出界面不停止认证。
-- 增加日志查看与诊断导出，遮盖当前账号和密码，不导出配置文件。
-- Windows 仅提供 x64、ARM64 安装程序；macOS 提供 Apple Silicon、Intel 安装包；Linux 提供系统服务安装包。移除便携版及重复的 Windows GNU 发行资源，各平台均附带 SHA-256 校验清单。
+- 采用 Rust 认证核心；Windows 使用 Win32 原生界面，macOS 使用 AppKit 原生界面，不再依赖 Python、Qt 或 PySide6。
+- Windows 使用系统自带的 NDISUIO 驱动完成有线认证，Npcap 后端及 EAPHost 验证方案退役，无需额外安装网络驱动。
+- macOS 提供完整 PKG，包含原生界面、菜单栏、后台服务和授权 helper；修复菜单栏图标反复重绘造成的高 CPU 占用。
+- 后台服务独立运行，统一恢复和重试策略；连接通知采用 5 秒防抖，短暂中断恢复时保持静默。
+- 支持日志查看和诊断导出；日志过长时保留最新记录，遮盖当前账号和密码，不导出配置文件。Windows 安装和升级会修复配置及日志权限。
+- 发行文件按平台和架构命名，移除 Rust、编译器和便携版标识。五个平台包与 SHA-256 校验文件齐全后统一发布。
 
-Windows 用户选择 `Rust_msvc_x64` 或 `Rust_msvc_arm64` 的 Setup。若此前启用了 Windows 系统有线认证，需要先停用有线自动配置，避免占用同一网卡；普通升级会保留 SYSU NetAuth 的账号和设置。
+Windows x64、ARM64 选择对应的 `windows_x64`、`windows_arm64` Setup；Apple Silicon 和 Intel Mac 分别选择 `macos_arm64`、`macos_x64` PKG。Linux x64 压缩包包含系统服务安装脚本。
 
-macOS 应用使用 ad-hoc 签名，安装包尚无 Developer ID 签名或公证。校园网实连、物理扩展坞拔插和睡眠恢复仍需在 macOS 实机继续验证。此版本保持 beta，程序内更新检查仍只提示正式版。
+Windows 已有设置在升级时保留。若同一网卡启用了 Windows 系统有线认证，请先停用有线自动配置服务，避免两个认证客户端同时占用网卡。旧 Python／Qt 客户端停止维护，建议使用本版。
+
+各平台自动构建和安装包检查均为发布必需项。Windows 已完成校园网实连和恢复验证；Mac 已完成两种架构的离线、服务及安装升级测试，校园网实连和电源恢复仍需设备验证。macOS 应用采用 ad-hoc 签名，尚无 Developer ID 签名或公证。
 
 [安装与使用文档](https://github.com/LoveElysia1314/sysu-netauth#readme)

@@ -20,7 +20,7 @@ class ReleaseAssetsTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="netauth release assets ")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.info = {"tag":"v0.7.0-beta.3", "version":"0.7.0-beta.3", "commit":"expected-commit"}
+        self.info = {"tag":"v0.7.0", "version":"0.7.0", "commit":"expected-commit"}
         self.metadata = self.root / "release-version.json"
         self.metadata.write_text(json.dumps(self.info),encoding="utf-8")
         self.output = self.root / "output"
