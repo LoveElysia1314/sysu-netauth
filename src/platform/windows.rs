@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail, ensure};
 use std::{
-    ffi::{CStr, CString, OsStr, c_void},
+    ffi::{CStr, OsStr, c_void},
     io::{self, Read, Write},
     mem,
     net::Ipv4Addr,
@@ -21,9 +21,12 @@ use windows_sys::Win32::{
     Networking::WinSock::{AF_INET, AF_UNSPEC, SOCKADDR_IN, SOCKET_ADDRESS},
     Security::*,
     Storage::FileSystem::*,
-    System::{IO::*, LibraryLoader::*, Pipes::*, Services::*, Threading::*},
+    System::{IO::*, Pipes::*, Services::*, Threading::*},
     UI::WindowsAndMessaging::{PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND},
 };
+
+#[path = "windows_uio.rs"]
+pub mod native_uio;
 
 pub fn wide(value: impl AsRef<OsStr>) -> Vec<u16> {
     value.as_ref().encode_wide().chain(Some(0)).collect()
@@ -82,223 +85,7 @@ pub fn cancellable_wait(stop: &Cancel, duration: Duration) -> bool {
     }
 }
 
-#[repr(C)]
-struct PcapHeader {
-    sec: i32,
-    usec: i32,
-    caplen: u32,
-    len: u32,
-}
-#[repr(C)]
-struct Bpf {
-    len: u32,
-    insns: *mut c_void,
-}
-struct PcapApi {
-    _module: usize,
-    open: unsafe extern "C" fn(*const i8, i32, i32, i32, *mut i8) -> *mut c_void,
-    close: unsafe extern "C" fn(*mut c_void),
-    next: unsafe extern "C" fn(*mut c_void, *mut *const PcapHeader, *mut *const u8) -> i32,
-    send: unsafe extern "C" fn(*mut c_void, *const u8, i32) -> i32,
-    compile: unsafe extern "C" fn(*mut c_void, *mut Bpf, *const i8, i32, u32) -> i32,
-    filter: unsafe extern "C" fn(*mut c_void, *mut Bpf) -> i32,
-    freecode: unsafe extern "C" fn(*mut Bpf),
-    nonblock: unsafe extern "C" fn(*mut c_void, i32, *mut i8) -> i32,
-    mintocopy: unsafe extern "C" fn(*mut c_void, i32) -> i32,
-    event: unsafe extern "C" fn(*mut c_void) -> HANDLE,
-}
-fn pcap_api() -> Result<Arc<PcapApi>> {
-    static API: Mutex<Option<Arc<PcapApi>>> = Mutex::new(None);
-    let mut cache = API.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(api) = &*cache {
-        return Ok(api.clone());
-    }
-    let loaded = (|| -> Result<Arc<PcapApi>> {
-        let mut path = [0u16; 32768];
-        let n = unsafe {
-            windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(
-                path.as_mut_ptr(),
-                path.len() as u32,
-            )
-        };
-        ensure!(
-            n > 0 && n < path.len() as u32,
-            "locate Windows system directory"
-        );
-        let path = std::path::PathBuf::from(String::from_utf16_lossy(&path[..n as usize]))
-            .join("Npcap/wpcap.dll");
-        let module = unsafe {
-            LoadLibraryExW(
-                wide(path.as_os_str()).as_ptr(),
-                ptr::null_mut(),
-                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
-            )
-        };
-        ensure!(
-            !module.is_null(),
-            "Npcap is unavailable for {} ({}). Install the official Npcap package from https://npcap.com/#download; it selects the correct architecture automatically",
-            std::env::consts::ARCH,
-            io::Error::last_os_error()
-        );
-        macro_rules! symbol {
-            ($name:literal,$ty:ty) => {{
-                let address = unsafe { GetProcAddress(module, concat!($name, "\0").as_ptr()) }
-                    .context(concat!("missing Npcap symbol ", $name))?;
-                unsafe { mem::transmute::<unsafe extern "system" fn() -> isize, $ty>(address) }
-            }};
-        }
-        Ok(Arc::new(PcapApi {
-            _module: module as usize,
-            open: symbol!(
-                "pcap_open_live",
-                unsafe extern "C" fn(*const i8, i32, i32, i32, *mut i8) -> *mut c_void
-            ),
-            close: symbol!("pcap_close", unsafe extern "C" fn(*mut c_void)),
-            next: symbol!(
-                "pcap_next_ex",
-                unsafe extern "C" fn(*mut c_void, *mut *const PcapHeader, *mut *const u8) -> i32
-            ),
-            send: symbol!(
-                "pcap_sendpacket",
-                unsafe extern "C" fn(*mut c_void, *const u8, i32) -> i32
-            ),
-            compile: symbol!(
-                "pcap_compile",
-                unsafe extern "C" fn(*mut c_void, *mut Bpf, *const i8, i32, u32) -> i32
-            ),
-            filter: symbol!(
-                "pcap_setfilter",
-                unsafe extern "C" fn(*mut c_void, *mut Bpf) -> i32
-            ),
-            freecode: symbol!("pcap_freecode", unsafe extern "C" fn(*mut Bpf)),
-            nonblock: symbol!(
-                "pcap_setnonblock",
-                unsafe extern "C" fn(*mut c_void, i32, *mut i8) -> i32
-            ),
-            mintocopy: symbol!(
-                "pcap_setmintocopy",
-                unsafe extern "C" fn(*mut c_void, i32) -> i32
-            ),
-            event: symbol!("pcap_getevent", unsafe extern "C" fn(*mut c_void) -> HANDLE),
-        }))
-    })()?;
-    *cache = Some(loaded.clone());
-    Ok(loaded)
-}
-pub struct Capture {
-    api: Arc<PcapApi>,
-    raw: *mut c_void,
-    event: HANDLE,
-    lock: Mutex<()>,
-}
-unsafe impl Send for Capture {}
-unsafe impl Sync for Capture {}
-impl Capture {
-    pub fn open(adapter: &Adapter) -> Result<Self> {
-        let api = pcap_api()?;
-        let name = CString::new(format!(r"\Device\NPF_{}", adapter.id))?;
-        let mut error = [0i8; 256];
-        let raw = unsafe {
-            (api.open)(
-                name.as_ptr(),
-                crate::protocol::MAX_FRAME as i32,
-                0,
-                0,
-                error.as_mut_ptr(),
-            )
-        };
-        ensure!(
-            !raw.is_null(),
-            "open Npcap: {}",
-            unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy()
-        );
-        let capture = Self {
-            event: unsafe { (api.event)(raw) },
-            raw,
-            api,
-            lock: Mutex::new(()),
-        };
-        ensure!(
-            !capture.event.is_null() && capture.event != INVALID_HANDLE_VALUE,
-            "Npcap returned invalid capture event"
-        );
-        let mut bpf = Bpf {
-            len: 0,
-            insns: ptr::null_mut(),
-        };
-        ensure!(
-            unsafe {
-                (capture.api.compile)(raw, &mut bpf, c"ether proto 0x888e".as_ptr(), 1, u32::MAX)
-            } == 0,
-            "compile EAPOL filter"
-        );
-        let filtered = unsafe { (capture.api.filter)(raw, &mut bpf) };
-        unsafe {
-            (capture.api.freecode)(&mut bpf);
-        }
-        ensure!(filtered == 0, "install EAPOL filter");
-        ensure!(
-            unsafe { (capture.api.nonblock)(raw, 1, error.as_mut_ptr()) } == 0,
-            "set nonblocking capture"
-        );
-        ensure!(
-            unsafe { (capture.api.mintocopy)(raw, 1) } == 0,
-            "set immediate capture event"
-        );
-        Ok(capture)
-    }
-    pub fn send(&self, bytes: &[u8]) -> Result<()> {
-        let _lock = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        ensure!(
-            unsafe { (self.api.send)(self.raw, bytes.as_ptr(), bytes.len() as i32) } == 0,
-            "Npcap send failed"
-        );
-        Ok(())
-    }
-    pub fn receive(&self, stop: &Cancel) -> Result<Option<Vec<u8>>> {
-        loop {
-            if unsafe { WaitForSingleObject(stop.0.0, 0) } == WAIT_OBJECT_0 {
-                return Ok(None);
-            }
-            // Drain libpcap's user-space buffer before waiting on the driver event.
-            // Reading a batch can reset that event while more packets remain buffered.
-            {
-                let _lock = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-                let mut header = ptr::null();
-                let mut data = ptr::null();
-                let result = unsafe { (self.api.next)(self.raw, &mut header, &mut data) };
-                ensure!(result >= 0, "Npcap read failed");
-                if result == 1 {
-                    ensure!(
-                        !header.is_null() && !data.is_null(),
-                        "invalid captured packet"
-                    );
-                    let len = unsafe { (*header).caplen } as usize;
-                    ensure!(
-                        len <= crate::protocol::MAX_FRAME,
-                        "oversized captured frame"
-                    );
-                    return Ok(Some(
-                        unsafe { std::slice::from_raw_parts(data, len) }.to_vec(),
-                    ));
-                }
-            }
-            let handles = [stop.0.0, self.event];
-            let wait = unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE) };
-            if wait == WAIT_OBJECT_0 {
-                return Ok(None);
-            }
-            ensure!(wait == WAIT_OBJECT_0 + 1, "capture event wait failed");
-        }
-    }
-}
-impl Drop for Capture {
-    fn drop(&mut self) {
-        unsafe {
-            (self.api.close)(self.raw);
-        }
-    }
-}
+pub use native_uio::Capture;
 
 fn socket_ip(addr: SOCKET_ADDRESS) -> String {
     if addr.lpSockaddr.is_null() || addr.iSockaddrLength < (mem::size_of::<SOCKADDR_IN>()) as i32 {
@@ -966,16 +753,16 @@ unsafe extern "system" fn control(
             tx.notify();
         }
     }
-    if code == SERVICE_CONTROL_POWEREVENT {
-        if let Some(power) = POWER.get() {
-            match event_type {
-                PBT_APMSUSPEND => power.notify(PowerEvent::Suspend),
-                // This arrives for unattended wakes too. RESUMESUSPEND is a
-                // later user-presence notification; handling both would reset
-                // an already recovering connection a second time.
-                PBT_APMRESUMEAUTOMATIC => power.notify(PowerEvent::Resume),
-                _ => {}
-            }
+    if code == SERVICE_CONTROL_POWEREVENT
+        && let Some(power) = POWER.get()
+    {
+        match event_type {
+            PBT_APMSUSPEND => power.notify(PowerEvent::Suspend),
+            // This arrives for unattended wakes too. RESUMESUSPEND is a
+            // later user-presence notification; handling both would reset
+            // an already recovering connection a second time.
+            PBT_APMRESUMEAUTOMATIC => power.notify(PowerEvent::Resume),
+            _ => {}
         }
     }
     0
@@ -1083,6 +870,7 @@ pub fn install_service() -> Result<()> {
     } else {
         SERVICE_DEMAND_START
     };
+    let dependencies = wide("ndisuio\0");
     let raw = unsafe {
         CreateServiceW(
             manager.0,
@@ -1095,7 +883,7 @@ pub fn install_service() -> Result<()> {
             path.as_ptr(),
             ptr::null(),
             ptr::null_mut(),
-            ptr::null(),
+            dependencies.as_ptr(),
             ptr::null(),
             ptr::null(),
         )
@@ -1119,7 +907,7 @@ pub fn install_service() -> Result<()> {
                     path.as_ptr(),
                     ptr::null(),
                     ptr::null_mut(),
-                    wide("").as_ptr(),
+                    dependencies.as_ptr(),
                     ptr::null(),
                     ptr::null(),
                     ptr::null(),
@@ -1177,10 +965,7 @@ pub fn set_login_task(enabled: bool) -> Result<()> {
     Ok(())
 }
 pub fn open_url(url: &str) {
-    if !crate::update::safe_url(
-        url,
-        &["github.com", "gitee.com", "npcap.com", "inc.sysu.edu.cn"],
-    ) {
+    if !crate::update::safe_url(url, &["github.com", "gitee.com", "inc.sysu.edu.cn"]) {
         return;
     }
     unsafe {
@@ -1272,64 +1057,5 @@ pub fn configure_service(automatic: bool) -> Result<()> {
         CloseServiceHandle(manager);
     }
     ensure!(ok != 0, "cannot change service startup type");
-    Ok(())
-}
-pub fn install_npcap() -> Result<()> {
-    use windows_sys::Win32::Security::WinTrust::*;
-    let bytes = https_get(
-        "https://npcap.com/dist/npcap-1.88.exe",
-        &["npcap.com"],
-        100 * 1024 * 1024,
-    )?;
-    ensure!(bytes.len() >= 1024 * 1024, "Npcap installer is incomplete");
-    let path = std::env::temp_dir().join(format!("SYSUNetAuth-Npcap-{}", std::process::id()));
-    secure_directory(&path)?;
-    let installer = path.join("npcap-1.88.exe");
-    std::fs::write(&installer, bytes)?;
-    let name = wide(installer.as_os_str());
-    let mut file = WINTRUST_FILE_INFO {
-        cbStruct: mem::size_of::<WINTRUST_FILE_INFO>() as u32,
-        pcwszFilePath: name.as_ptr(),
-        hFile: ptr::null_mut(),
-        pgKnownSubject: ptr::null_mut(),
-    };
-    let mut trust: WINTRUST_DATA = unsafe { mem::zeroed() };
-    trust.cbStruct = mem::size_of::<WINTRUST_DATA>() as u32;
-    trust.dwUIChoice = WTD_UI_NONE;
-    trust.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN;
-    trust.dwUnionChoice = WTD_CHOICE_FILE;
-    trust.Anonymous.pFile = &mut file;
-    trust.dwStateAction = WTD_STATEACTION_VERIFY;
-    let mut action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-    let result = unsafe {
-        WinVerifyTrust(
-            ptr::null_mut(),
-            &mut action,
-            (&mut trust as *mut WINTRUST_DATA).cast(),
-        )
-    };
-    trust.dwStateAction = WTD_STATEACTION_CLOSE;
-    unsafe {
-        WinVerifyTrust(
-            ptr::null_mut(),
-            &mut action,
-            (&mut trust as *mut WINTRUST_DATA).cast(),
-        );
-    }
-    ensure!(
-        result == 0,
-        "Npcap installer signature validation failed ({result:#x})"
-    );
-    let result = unsafe {
-        windows_sys::Win32::UI::Shell::ShellExecuteW(
-            ptr::null_mut(),
-            wide("runas").as_ptr(),
-            name.as_ptr(),
-            ptr::null(),
-            ptr::null(),
-            1,
-        )
-    };
-    ensure!(result as usize > 32, "could not launch Npcap installer");
     Ok(())
 }

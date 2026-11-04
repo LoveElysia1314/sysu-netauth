@@ -10,7 +10,6 @@ import tarfile
 
 PLATFORM_TIERS = {
     "rust-msvc-x64": 1,
-    "rust-gnu-x64": 1,
     "rust-msvc-arm64": 2,
     "rust-linux-x64": 2,
     "rust-macos-arm64": 3,
@@ -36,7 +35,6 @@ def expected_assets(info: dict, *, platforms: set[str] | None = None) -> dict[st
     for label, version in (
         ("Rust_msvc_x64", info["version"]),
         ("Rust_msvc_arm64", info["version"]),
-        ("Rust_gnu_x64", info["version"]),
     ):
         stem = f"SYSUNetAuth_{label}"
         identifier = label.lower().replace("_", "-")
@@ -44,7 +42,6 @@ def expected_assets(info: dict, *, platforms: set[str] | None = None) -> dict[st
             continue
         groups[f"SHA256SUMS-{identifier}.txt"] = [
             f"{stem}_Setup_v{version}.exe",
-            f"{stem}_Portable_v{version}.zip",
         ]
     if "rust-linux-x64" in selected:
         groups["SHA256SUMS-rust-linux-x64.txt"] = [
@@ -54,29 +51,38 @@ def expected_assets(info: dict, *, platforms: set[str] | None = None) -> dict[st
         if f"rust-macos-{arch}" not in selected:
             continue
         groups[f"SHA256SUMS-rust-macos-{arch}.txt"] = [
-            f"SYSUNetAuth_Rust_macos_{arch}_v{info['version']}.tar.gz"
+            f"SYSUNetAuth_Rust_macos_{arch}_v{info['version']}.pkg"
         ]
     return groups
 
 
-def prepare(metadata: Path, linux_input: Path | None, output: Path, *, macos_inputs: dict[str, Path], platforms: set[str] | None = None) -> list[Path]:
+def prepare(metadata: Path, linux_input: Path | None, output: Path, *, macos_inputs: dict[str, Path], macos_metadata: dict[str, Path] | None = None, platforms: set[str] | None = None) -> list[Path]:
     selected = select_platforms(platforms)
     info = json.loads(metadata.read_text(encoding="utf-8"))
     groups = expected_assets(info, platforms=selected)
     required_macos = {arch for arch in ("arm64", "x64") if f"rust-macos-{arch}" in selected}
     if not required_macos <= macos_inputs.keys():
         raise ValueError(f"Missing macOS archives: {sorted(required_macos - macos_inputs.keys())}")
-    unix_inputs = {f"macos-{arch}": macos_inputs[arch] for arch in sorted(required_macos)}
+    macos_metadata = macos_metadata or {}
+    for arch in sorted(required_macos):
+        if arch not in macos_metadata:
+            raise ValueError(f"Missing macOS installer metadata: {arch}")
+        package = macos_inputs[arch]
+        provenance = json.loads(macos_metadata[arch].read_text(encoding="utf-8"))
+        with package.open("rb") as stream:
+            if stream.read(4) != b"xar!":
+                raise ValueError(f"macos-{arch} input is not a flat installer package")
+        if provenance.get("release") != info or provenance.get("arch") != arch:
+            raise ValueError(f"macos-{arch} artifact version/commit or architecture does not match this release")
+        if provenance.get("sha256") != digest(package):
+            raise ValueError(f"macos-{arch} installer checksum mismatch")
+    unix_inputs = {}
     if "rust-linux-x64" in selected:
         if linux_input is None:
             raise ValueError("Missing Linux archive for Tier 2")
         unix_inputs["linux-x64"] = linux_input
     for platform, path in unix_inputs.items():
-        required = ("sysu_netauth", "sysu_netauth_service", "release-version.json")
-        if platform == "linux-x64":
-            required += ("sysu-netauth.service", "install-linux.sh")
-        else:
-            required += ("io.github.peterrobot.sysu-netauth.plist", "install-macos.sh", "uninstall-macos.sh", "launchd-common.sh")
+        required = ("sysu_netauth", "sysu_netauth_service", "release-version.json", "sysu-netauth.service", "install-linux.sh")
         with tarfile.open(path, "r:gz") as archive:
             prefix = f"sysu-netauth-{platform}"
             for name in required:
@@ -87,7 +93,8 @@ def prepare(metadata: Path, linux_input: Path | None, output: Path, *, macos_inp
                 if json.load(stream) != info:
                     raise ValueError(f"{platform} artifact version/commit does not match this release")
     output.mkdir(parents=True, exist_ok=True)
-    for platform, path in unix_inputs.items():
+    packages = unix_inputs | {f"macos-{arch}": macos_inputs[arch] for arch in sorted(required_macos)}
+    for platform, path in packages.items():
         checksum = f"SHA256SUMS-rust-{platform}.txt"
         name = groups[checksum][0]
         destination = output / name
@@ -114,6 +121,8 @@ def main() -> None:
     parser.add_argument("--linux-input", type=Path)
     parser.add_argument("--macos-arm64-input", type=Path)
     parser.add_argument("--macos-x64-input", type=Path)
+    parser.add_argument("--macos-arm64-metadata", type=Path)
+    parser.add_argument("--macos-x64-metadata", type=Path)
     parser.add_argument("--tier", type=int, choices=(1, 2, 3), action="append", help="Support tier to include; repeat to select several (default: all)")
     parser.add_argument("--macos-arch", choices=("arm64", "x64"), help="Limit Tier 3 to one architecture")
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -122,8 +131,9 @@ def main() -> None:
     if args.macos_arch:
         platforms -= {f"rust-macos-{arch}" for arch in ("arm64", "x64") if arch != args.macos_arch}
     macos_inputs = {arch: path for arch, path in (("arm64", args.macos_arm64_input), ("x64", args.macos_x64_input)) if path is not None}
+    macos_metadata = {arch: path for arch, path in (("arm64", args.macos_arm64_metadata), ("x64", args.macos_x64_metadata)) if path is not None}
     for path in prepare(args.metadata, args.linux_input, args.output_dir,
-                        macos_inputs=macos_inputs, platforms=platforms):
+                        macos_inputs=macos_inputs, macos_metadata=macos_metadata, platforms=platforms):
         print(path.name)
 
 

@@ -57,7 +57,7 @@ def main():
     if args.record_windows:
         assert stamp.read_text().strip() == digest(source_bytes()), 'Windows export used stale compiled geometry; rebuild and re-export'
         value = windows_manifest()
-        assert set(value['files']) == {f'{n}.ico' for n in ['app','ready','authenticating','authenticated','failed','disconnected','unavailable']}
+        assert set(value['files']) == {'app.ico'} | {f'{n}{suffix}.ico' for n in ['ready','authenticating','authenticated','failed','disconnected','unavailable'] for suffix in ['', '-light', '-dark']}
         manifest.write_text(json.dumps(value,indent=2)+'\n', encoding='utf-8')
     elif args.check:
         for path, text in generated.items():

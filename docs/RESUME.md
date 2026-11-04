@@ -18,6 +18,6 @@ sysu_netauth status --json
 Get-Content "$env:ProgramData\SYSUNetAuth\service.log" -Tail 40
 ```
 
-日志应出现新的认证尝试，联网成功后记录 `authenticated; Internet reachable`。服务未启动时检查独立服务设置；服务正在运行但认证失败时，检查 Npcap、网卡选择、凭据及联网探测结果。
+日志应出现新的认证尝试，联网成功后记录 `authenticated; Internet reachable`。服务未启动时检查独立服务设置；服务正在运行但认证失败时，检查原生驱动访问、网卡选择、凭据及联网探测结果。
 
 设备回归检查包括睡眠、休眠、无人值守唤醒、网卡延迟就绪和重复恢复；测试步骤见[验证文档](VALIDATION.md)。

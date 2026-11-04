@@ -6,6 +6,7 @@ pub mod engine;
 #[cfg(windows)]
 pub mod gui;
 pub mod ipc;
+pub mod native_eap;
 pub mod platform;
 pub mod protocol;
 pub mod service;

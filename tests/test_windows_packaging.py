@@ -11,7 +11,6 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-import zipfile
 
 from test_release_version import versioning, set_package_version
 
@@ -33,7 +32,6 @@ class WindowsPackagingTests(unittest.TestCase):
             "Cargo.toml",
             "Cargo.lock",
             "scripts/setup.template.iss",
-            "scripts/npcap.iss",
             "scripts/windows/process.iss",
             "scripts/windows/service.iss",
             "scripts/windows/data.iss",
@@ -80,29 +78,20 @@ class WindowsPackagingTests(unittest.TestCase):
         (output / f"{name}.exe").write_bytes(b"MZ compiled setup fixture")
         return subprocess.CompletedProcess(command, 0)
 
-    def test_all_windows_variants_have_installers_portable_binaries_and_checksums(self):
+    def test_windows_variants_emit_only_installers_and_checksums(self):
         self.output.mkdir()
         for label in ("Rust_msvc_x64", "Rust_gnu_x64"):
-            (self.output / f"SYSUNetAuth_{label}_Setup_v1.2.3.zip").write_bytes(b"obsolete installer ZIP")
-        with patch.object(packaging.subprocess, "run", side_effect=self.compile) as compile_setup:
-            rust = packaging.package(self.source, self.output, Path("ISCC.exe"))
-            gnu = packaging.package(self.source, self.output, Path("ISCC.exe"), abi="gnu")
-        self.assertEqual(compile_setup.call_count, 2)
-        self.assertEqual(rust[0].name, f"SYSUNetAuth_Rust_msvc_x64_Setup_v{RUST_VERSION}.exe")
-        self.assertEqual(gnu[0].name, f"SYSUNetAuth_Rust_gnu_x64_Setup_v{RUST_VERSION}.exe")
-        self.assertTrue(any("/DMyAppAbi=gnu" in call.args[0] for call in compile_setup.call_args_list))
-        for setup, portable, checksums in (rust, gnu):
-            with zipfile.ZipFile(portable) as bundle:
-                self.assertEqual(bundle.read("sysu_netauth/sysu_netauth.exe"), (self.source / "sysu_netauth.exe").read_bytes())
-                self.assertIn("sysu_netauth/sysu_netauth_service.exe", bundle.namelist())
-                self.assertEqual(len(bundle.namelist()), 3)
-                self.assertIn("sysu_netauth/sysu_netauth_gui.exe", bundle.namelist())
-            self.assertEqual(len(checksums.read_text().splitlines()), 2)
-            self.assertEqual({line.split("  ")[1] for line in checksums.read_text().splitlines()}, {setup.name, portable.name})
-            for line in checksums.read_text(encoding="utf-8").splitlines():
-                digest, name = line.split("  ")
-                self.assertEqual(digest, hashlib.sha256((self.output / name).read_bytes()).hexdigest())
-        self.assertFalse(list(self.output.glob("*_Setup_*.zip")))
+            (self.output / f"SYSUNetAuth_{label}_Portable_v1.2.3.zip").write_bytes(b"obsolete portable")
+        with patch.object(packaging.subprocess, "run", side_effect=self.compile) as compiler:
+            variants = [packaging.package(self.source, self.output, Path("ISCC.exe")),
+                        packaging.package(self.source, self.output, Path("ISCC.exe"), abi="gnu")]
+        self.assertEqual(compiler.call_count, 2)
+        for setup, checksums in variants:
+            self.assertEqual(len(checksums.read_text().splitlines()), 1)
+            digest, name = checksums.read_text().strip().split("  ")
+            self.assertEqual(name, setup.name)
+            self.assertEqual(digest, hashlib.sha256(setup.read_bytes()).hexdigest())
+        self.assertFalse(list(self.output.glob("*.zip")))
 
     def test_one_prerelease_tag_drives_all_installers_and_checks_artifact_identity(self):
         subprocess.run(["git", "-C", str(self.root), "tag", "-d", "v1.2.3"], check=True, stdout=subprocess.DEVNULL)
@@ -148,20 +137,15 @@ class WindowsPackagingTests(unittest.TestCase):
             with self.assertRaisesRegex(FileNotFoundError, "did not produce"):
                 packaging.package(self.source, self.output, Path("ISCC.exe"))
 
-    def test_arm64_installer_portable_and_checksums_are_distinct(self):
+    def test_arm64_installer_and_checksums_are_distinct(self):
         self.write_binaries("arm64")
         with patch.object(packaging.subprocess, "run", side_effect=self.compile) as compiler:
-            setup, portable, checksums = packaging.package(self.source, self.output, Path("ISCC.exe"), arch="arm64")
+            setup, checksums = packaging.package(self.source, self.output, Path("ISCC.exe"), arch="arm64")
         self.assertEqual(setup.name, "SYSUNetAuth_Rust_msvc_arm64_Setup_v1.2.3.exe")
         self.assertIn("/DMyAppArch=arm64", compiler.call_args.args[0])
         self.assertEqual(checksums.name, "SHA256SUMS-rust-msvc-arm64.txt")
-        with zipfile.ZipFile(portable) as archive:
-            self.assertEqual(len(archive.namelist()), 3)
-            for name in archive.namelist():
-                self.assertEqual(struct.unpack_from("<H", archive.read(name), 68)[0], 0xaa64)
-        for line in checksums.read_text(encoding="utf-8").splitlines():
-            digest, name = line.split("  ")
-            self.assertEqual(digest, hashlib.sha256((self.output / name).read_bytes()).hexdigest())
+        self.assertEqual(len(checksums.read_text().splitlines()), 1)
+        self.assertFalse(list(self.output.glob("*.zip")))
 
     def test_mislabeled_and_mixed_architecture_artifacts_are_rejected(self):
         with patch.object(packaging.subprocess, "run") as compiler:

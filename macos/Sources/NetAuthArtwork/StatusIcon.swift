@@ -46,12 +46,12 @@ public enum StatusIcon {
         }
     }
     public static func image(_ state: StatusMark, colored: Bool, highlighted: Bool = false,
-                             windows: Bool = false, appIcon: Bool = false) -> NSImage {
+                             windows: Bool = false, appIcon: Bool = false, monochrome: NSColor? = nil) -> NSImage {
         let image = NSImage(size: NSSize(width: source.size,height: source.size), flipped: false) { _ in
             let mark = source.states[state.rawValue]!
-            let outline: NSColor = windows ? color(source.windows_outline)
-                : !colored ? .black : highlighted ? .selectedMenuItemTextColor : .labelColor
-            let accent = !colored || highlighted ? outline : color(source.palette[appIcon ? "green" : mark.color]!)
+            let outline: NSColor = monochrome ?? (windows ? color(source.windows_outline)
+                : !colored ? .black : highlighted ? .selectedMenuItemTextColor : .labelColor)
+            let accent = monochrome != nil || !colored || highlighted ? outline : color(source.palette[appIcon ? "green" : mark.color]!)
             draw(source.shield, color: outline)
             for path in mark.paths { draw(path, color: accent) }
             return true

@@ -20,10 +20,9 @@
 #if MyAppArch == "arm64" && MyAppAbi != "msvc"
   #error ARM64 requires the MSVC build
 #endif
-#define MyAppName "SYSU NetAuth"
+  #define MyAppName "SYSU NetAuth"
+  #define MyAppGuid "7E9B2C3A-1D4F-4E8A-9B6C-2F3D0E5A7C1B"
 #define MyAppId "SYSUNetAuth"
-#define MyAppGuid "7E9B2C3A-1D4F-4E8A-9B6C-2F3D0E5A7C1B"
-#define NpcapUrl "https://npcap.com/#download"
 
 [Setup]
 AppId={#MyAppGuid}
@@ -66,6 +65,7 @@ Name: "chinesesimplified"; MessagesFile: "Languages\ChineseSimplified.isl"
 Source: "{#AppSourceDir}\sysu_netauth.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#AppSourceDir}\sysu_netauth_service.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#AppSourceDir}\sysu_netauth_gui.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "..\docs\WINDOWS.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
 Name: "{app}"; Permissions: admins-full system-full users-readexec
@@ -78,14 +78,12 @@ Name: "{autodesktop}\SYSU NetAuth"; Filename: "{app}\sysu_netauth_gui.exe"
 
 [Run]
 Filename: "{app}\sysu_netauth_gui.exe"; Description: "启动 SYSU NetAuth"; Flags: nowait postinstall skipifsilent runascurrentuser
-Filename: "{#NpcapUrl}"; Description: "打开 Npcap 官网下载页（网络认证需要安装驱动）"; Flags: shellexec nowait postinstall skipifsilent runasoriginaluser unchecked; Check: NpcapRequired
 
 [Code]
 const
   EnvironmentKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
   UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{#MyAppGuid}_is1';
 
-#include "npcap.iss"
 #include "windows/process.iss"
 #include "windows/service.iss"
 #include "windows/data.iss"
@@ -108,12 +106,11 @@ end;
 procedure InitializeWizard;
 begin
   if ExistingInstallDir <> '' then WizardForm.DirEdit.Text := ExistingInstallDir;
-  InitializeNpcapPage;
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
-  Result := SkipNpcapPage(PageID);
+  Result := False;
 end;
 
 procedure CurPageChanged(PageID: Integer);
@@ -125,7 +122,6 @@ begin
     WizardForm.SelectDirBrowseLabel.Caption :=
       '检测到已安装版本。重装或升级将沿用现有目录。';
   end;
-  if PageID = NpcapPage.ID then RefreshNpcapStatus;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -178,7 +174,7 @@ begin
       RaiseException('Windows 服务注册失败或超时，请查看安装日志。错误码：' + IntToStr(Code));
     ManagedStartChanged := False; { --install applied the saved service mode. }
     RunSetupCommand(ExpandConstant('{sys}\sc.exe'), 'failure SYSUNetAuth reset= 86400 actions= restart/60000', 15, Code);
-    // The service must start without Npcap so configuration and setup remain available.
+    // The service starts independently of the GUI.
     SetupStage('正在启动后台认证服务…');
     if RunSetupCommand(ExpandConstant('{sys}\sc.exe'), 'start SYSUNetAuth', 30, Code) and (Code = 0) then
       Log('Windows 服务已启动。')
@@ -213,6 +209,5 @@ begin
         mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then begin
         DeleteSavedData(SharedData);
       end;
-    OfferNpcapUninstall;
   end;
 end;

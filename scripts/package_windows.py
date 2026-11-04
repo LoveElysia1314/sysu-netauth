@@ -16,7 +16,6 @@ import re
 import shutil
 import subprocess
 import struct
-import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -101,16 +100,12 @@ def package(input_dir: Path, output_dir: Path, compiler: Path, *, abi: str = "ms
     )
     if not setup.is_file() or setup.stat().st_size == 0:
         raise FileNotFoundError(f"Inno Setup did not produce {setup}")
-    payload = [input_dir / name for name in required]
-    with zipfile.ZipFile(portable, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
-        for path in payload:
-            bundle.write(path, (Path("sysu_netauth") / path.relative_to(input_dir)).as_posix())
     hashes = []
-    for path in (setup, portable):
+    for path in (setup,):
         with path.open("rb") as stream:
             hashes.append(f"{hashlib.file_digest(stream, 'sha256').hexdigest()}  {path.name}\n")
     checksums.write_text("".join(hashes), encoding="utf-8")
-    return [setup, portable, checksums]
+    return [setup, checksums]
 
 
 def main() -> None:

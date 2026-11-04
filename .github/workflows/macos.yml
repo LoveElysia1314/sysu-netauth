@@ -49,6 +49,10 @@ jobs:
       - run: cargo test --locked --target ${{ matrix.target }} --workspace
       - name: Check SDK ABI
         run: clang -std=c11 -Wno-deprecated-declarations -Werror tests/fixtures/macos_abi.c -o "$RUNNER_TEMP/macos-abi"
+      - name: Test native GUI and helper contracts
+        run: |
+          swift test --package-path macos
+          sh scripts/test-macos-gui-offline.sh
       - name: Test daemon IPC, shutdown and BPF cancellation
         env:
           CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: sudo -n --
@@ -60,14 +64,16 @@ jobs:
         env:
           MACOS_ARCH: ${{ matrix.arch }}
         run: |
-          actual=$("dist/sysu-netauth-macos-$MACOS_ARCH/sysu_netauth" --version)
+          actual=$("dist/SYSUNetAuth.app/Contents/Resources/sysu_netauth" --version)
           test "$actual" = "sysu-netauth ${NETAUTH_RELEASE_TAG#v}"
       - name: Test launchd install, upgrade and removal
-        run: sh scripts/test-launchd.sh dist/sysu-netauth-macos-${{ matrix.arch }}
+        run: sh scripts/test-macos-package.sh dist/sysu-netauth-macos-${{ matrix.arch }}.pkg
       - uses: actions/upload-artifact@v4
         with:
           name: sysu-netauth-Rust-macOS-${{ matrix.arch }}
-          path: dist/sysu-netauth-macos-${{ matrix.arch }}.tar.gz
+          path: |
+            dist/sysu-netauth-macos-${{ matrix.arch }}.pkg
+            dist/sysu-netauth-macos-${{ matrix.arch }}.pkg.metadata.json
           if-no-files-found: error
           overwrite: true
       - name: Report advisory failure

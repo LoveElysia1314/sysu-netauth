@@ -29,6 +29,10 @@ struct Args {
 enum Command {
     /// List adapters using OS APIs, without requiring a running service.
     Interfaces,
+    /// Read non-secret UI preferences.
+    Preferences,
+    /// Read bounded, credential-redacted diagnostic log.
+    Diagnostics,
     /// Send EAPOL-Start and wait for an authentication server.
     Probe {
         #[arg(short, long)]
@@ -264,6 +268,8 @@ fn run() -> Result<()> {
     let args = Args::parse();
     let paths = paths(args.data_dir);
     match args.command {
+        Command::Preferences => output(&ipc::request(&paths, Action::Preferences)?.data, args.json),
+        Command::Diagnostics => output(&ipc::request(&paths, Action::Diagnostics)?.data, args.json),
         Command::Interfaces => output(&platform::adapters()?, args.json),
         Command::Probe { iface, timeout } => {
             direct(&paths, Some(iface), None, None, timeout, true, args.json)

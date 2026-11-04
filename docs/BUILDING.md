@@ -63,7 +63,7 @@ rustup target add aarch64-pc-windows-msvc
 sh scripts/build-windows.sh aarch64-pc-windows-msvc
 ```
 
-输出为 `dist/sysu-netauth-windows-x64.zip` 或 `dist/arm64/sysu-netauth-windows-arm64.zip`。SDK 缓存默认位于 `target/xwin`，可用 `XWIN_CACHE_DIR` 修改；资源编译器可用 `NETAUTH_RC` 指定。
+这些 ZIP 仅用于 CI 构建传递与开发验证，不作为公开发行附件。输出为 `dist/sysu-netauth-windows-x64.zip` 或 `dist/arm64/sysu-netauth-windows-arm64.zip`。SDK 缓存默认位于 `target/xwin`，可用 `XWIN_CACHE_DIR` 修改；资源编译器可用 `NETAUTH_RC` 指定。
 
 GNU 构建使用 MinGW：
 

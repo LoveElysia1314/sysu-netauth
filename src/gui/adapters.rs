@@ -3,15 +3,15 @@ use crate::platform::Adapter;
 /// Keep an unsaved selection visible when a removable adapter disappears.
 pub(super) fn refresh(all: &[Adapter], selected: Option<&Adapter>) -> Vec<Adapter> {
     let mut items: Vec<_> = all.iter().filter(|a| a.ethernet).cloned().collect();
-    if let Some(selected) = selected {
-        if !items.iter().any(|a| a.id == selected.id) {
-            let mut missing = selected.clone();
-            missing.up = false;
-            missing.ipv4.clear();
-            missing.gateway.clear();
-            missing.dns.clear();
-            items.push(missing);
-        }
+    if let Some(selected) = selected
+        && !items.iter().any(|a| a.id == selected.id)
+    {
+        let mut missing = selected.clone();
+        missing.up = false;
+        missing.ipv4.clear();
+        missing.gateway.clear();
+        missing.dns.clear();
+        items.push(missing);
     }
     items
 }

@@ -93,13 +93,6 @@ jobs:
             label: rust-msvc-arm64
             artifact: sysu-netauth-Rust-Windows-msvc-arm64
             input: dist/build-input/sysu_netauth
-          - os: windows-latest
-            tier: 1
-            arch: x64
-            abi: gnu
-            label: rust-gnu-x64
-            artifact: sysu-netauth-Rust-Windows-gnu
-            input: dist/build-input/sysu_netauth
 
     env:
       PYTHONUTF8: '1'
@@ -187,7 +180,7 @@ jobs:
             gh release create "$RELEASE_TAG" dist/release-assets/* \
               --verify-tag --draft --title "SYSU NetAuth $RELEASE_TAG" \
               --prerelease="$PRERELEASE" \
-              --notes-file .github/windows-release-notes.md
+              --notes-file .github/release-notes.md
           fi
   macos-release-assets:
     name: Tier 3 / macOS ${{ matrix.arch }} release assets (advisory)
@@ -217,7 +210,8 @@ jobs:
         run: >-
           python3 scripts/prepare_release_assets.py --metadata build/release-version.json
           --tier 3 --macos-arch "$MACOS_ARCH"
-          --macos-"$MACOS_ARCH"-input "dist/macos-build/sysu-netauth-macos-$MACOS_ARCH.tar.gz"
+          --macos-"$MACOS_ARCH"-input "dist/macos-build/sysu-netauth-macos-$MACOS_ARCH.pkg"
+          --macos-"$MACOS_ARCH"-metadata "dist/macos-build/sysu-netauth-macos-$MACOS_ARCH.pkg.metadata.json"
           --output-dir dist/release-assets
       - name: Upload verified macOS packages
         env:

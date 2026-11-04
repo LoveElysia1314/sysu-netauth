@@ -5,7 +5,7 @@ use crate::{
     ipc::{self, Action, Response},
     platform::{self, Adapter, wide},
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use std::{
     mem, ptr,
     sync::{Arc, Mutex, mpsc},
@@ -41,15 +41,19 @@ const CONNECT: u16 = 102;
 const DISCONNECT: u16 = 103;
 const UPDATE: u16 = 104;
 const RELEASE: u16 = 105;
-const NPCAP: u16 = 106;
+
 const SHOW_PASSWORD: u16 = 107;
 const IGNORE: u16 = 108;
 const MANUAL: u16 = 109;
 const LOGIN: u16 = 110;
+const LOGS: u16 = 111;
+const EXPORT: u16 = 112;
+const ICON_MONO: u16 = 203;
+const ICON_COLOR: u16 = 204;
 const MENU_SHOW: u16 = 201;
 const MENU_QUIT: u16 = 202;
 const CLIENT_WIDTH: i32 = 720;
-const CLIENT_HEIGHT: i32 = 396;
+const CLIENT_HEIGHT: i32 = 470;
 
 #[derive(Clone, Copy)]
 enum Font {
@@ -74,11 +78,9 @@ enum UiEvent {
     Reply(u16, Result<Response, String>),
     Snapshot(Box<Snapshot>),
     Disconnected(String),
-    Npcap(Result<(), String>),
 }
 enum Task {
     Request(u16, Action),
-    InstallNpcap,
 }
 struct Window {
     hwnd: HWND,
@@ -86,9 +88,7 @@ struct Window {
     password: HWND,
     iface: HWND,
     manual: HWND,
-    retry: HWND,
     auto_auth: HWND,
-    service_mode: HWND,
     login: HWND,
     hidden: HWND,
     notify: HWND,
@@ -117,6 +117,7 @@ struct Window {
     startup: bool,
     initial_config: bool,
     taskbar_created: u32,
+    colored_icons: bool,
 }
 fn resource_icon(id: u16, fallback: *const u16) -> HICON {
     let icon = unsafe { LoadIconW(GetModuleHandleW(ptr::null()), id as usize as *const u16) };
@@ -186,9 +187,7 @@ impl Window {
             password: ptr::null_mut(),
             iface: ptr::null_mut(),
             manual: ptr::null_mut(),
-            retry: ptr::null_mut(),
             auto_auth: ptr::null_mut(),
-            service_mode: ptr::null_mut(),
             login: ptr::null_mut(),
             hidden: ptr::null_mut(),
             notify: ptr::null_mut(),
@@ -214,6 +213,7 @@ impl Window {
             subscription_connected: false,
             ignored_version: ui["ignored_version"].as_str().unwrap_or_default().into(),
             notified_version: ui["notified_version"].as_str().unwrap_or_default().into(),
+            colored_icons: ui["colored_icons"].as_bool().unwrap_or(false),
             startup,
             initial_config: false,
             taskbar_created: unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) },
@@ -408,12 +408,12 @@ impl Window {
     fn build(&mut self) {
         self.control(
             "BUTTON",
-            "账户与连接",
+            "账户与认证",
             BS_GROUPBOX as u32,
             14,
             12,
             348,
-            316,
+            390,
             0,
         );
         self.control(
@@ -423,7 +423,7 @@ impl Window {
             374,
             12,
             332,
-            316,
+            390,
             0,
         );
         self.control("STATIC", "NetID", SS_CENTERIMAGE, 28, 38, 46, 26, 0);
@@ -483,65 +483,65 @@ impl Window {
             24,
             MANUAL,
         );
-        self.control("STATIC", "重试（秒）", SS_CENTERIMAGE, 196, 140, 88, 24, 0);
-        self.retry = self.control(
-            "EDIT",
-            "60",
-            WS_TABSTOP | WS_BORDER | ES_NUMBER as u32,
-            286,
-            140,
-            62,
-            24,
-            0,
-        );
-        self.service_mode = self.control(
-            "BUTTON",
-            "认证服务独立于程序运行",
-            WS_TABSTOP | BS_AUTOCHECKBOX as u32,
+        self.control(
+            "STATIC",
+            "后台服务独立运行，退出界面不影响认证",
+            SS_CENTERIMAGE,
             28,
-            178,
+            168,
             320,
             24,
             0,
         );
         self.auto_auth = self.control(
             "BUTTON",
-            "启动后自动认证",
+            "服务启动后自动认证",
             WS_TABSTOP | BS_AUTOCHECKBOX as u32,
             28,
-            206,
-            156,
+            196,
+            320,
             24,
             0,
         );
-        self.notify = self.control(
-            "BUTTON",
-            "状态变化时通知",
-            WS_TABSTOP | BS_AUTOCHECKBOX as u32,
-            192,
-            206,
-            156,
-            24,
-            0,
-        );
+        self.control("STATIC", "界面与提醒", SS_CENTERIMAGE, 28, 224, 320, 20, 0);
         self.login = self.control(
             "BUTTON",
-            "登录时启动程序",
+            "开机后启动界面程序",
             WS_TABSTOP | BS_AUTOCHECKBOX as u32,
             28,
-            234,
-            156,
+            246,
+            320,
             24,
             LOGIN,
         );
         self.hidden = self.control(
             "BUTTON",
-            "启动时隐藏窗口",
+            "开机后隐藏配置窗口",
             WS_TABSTOP | BS_AUTOCHECKBOX as u32,
-            192,
-            234,
-            156,
+            28,
+            272,
+            320,
             24,
+            0,
+        );
+        self.notify = self.control(
+            "BUTTON",
+            "认证状态变化后通知",
+            WS_TABSTOP | BS_AUTOCHECKBOX as u32,
+            28,
+            298,
+            320,
+            24,
+            0,
+        );
+        self.control(
+            "STATIC",
+            "通知需要程序驻留托盘",
+            SS_CENTERIMAGE,
+            28,
+            324,
+            320,
+            20,
             0,
         );
         for (id, label, x, style) in [
@@ -554,7 +554,7 @@ impl Window {
                 label,
                 WS_TABSTOP | style as u32,
                 x,
-                282,
+                356,
                 100,
                 30,
                 id,
@@ -589,13 +589,15 @@ impl Window {
                 0,
             );
         }
-        self.control("BUTTON", "安装 Npcap", WS_TABSTOP, 388, 282, 112, 30, NPCAP);
+        self.control("BUTTON", "查看日志", WS_TABSTOP, 388, 282, 100, 30, LOGS);
+        self.control("BUTTON", "导出诊断", WS_TABSTOP, 498, 282, 100, 30, EXPORT);
+
         self.update = self.control(
             "STATIC",
             "",
             SS_CENTERIMAGE | SS_ENDELLIPSIS,
             14,
-            340,
+            414,
             422,
             28,
             0,
@@ -605,15 +607,15 @@ impl Window {
             (IGNORE, "忽略", 534, 68),
             (UPDATE, "检查更新", 612, 94),
         ] {
-            self.control("BUTTON", label, WS_TABSTOP, x, 340, width, 28, id);
+            self.control("BUTTON", label, WS_TABSTOP, x, 414, width, 28, id);
         }
         self.control(
             "STATIC",
             concat!("Rust · v", env!("NETAUTH_APP_VERSION")),
             0,
             14,
-            372,
-            340,
+            446,
+            414,
             20,
             0,
         );
@@ -622,7 +624,7 @@ impl Window {
             "关闭窗口后驻留托盘",
             SS_RIGHT,
             444,
-            372,
+            446,
             262,
             20,
             0,
@@ -637,7 +639,16 @@ impl Window {
         self.tray.uID = 1;
         self.tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         self.tray.uCallbackMessage = TRAY;
-        self.tray.hIcon = resource_icon(2, IDI_APPLICATION);
+        self.tray.hIcon = resource_icon(
+            if self.colored_icons {
+                2
+            } else if theme::taskbar_dark() {
+                22
+            } else {
+                12
+            },
+            IDI_APPLICATION,
+        );
         copy_wide(&mut self.tray.szTip, "SYSU NetAuth");
         unsafe {
             Shell_NotifyIconW(NIM_ADD, &self.tray);
@@ -648,11 +659,9 @@ impl Window {
         set_text(self.password, &self.config.password);
         check(self.manual, self.config.iface_mode == "manual");
         check(self.auto_auth, self.config.auto_auth);
-        check(self.service_mode, self.config.service_mode);
         check(self.login, self.config.launch_gui_on_login);
         check(self.hidden, self.config.hide_window_on_login);
         check(self.notify, self.config.desktop_notify);
-        set_text(self.retry, &self.config.retry_interval.to_string());
         self.populate_adapters();
         self.update_options();
         if !self.initial_config {
@@ -746,8 +755,8 @@ impl Window {
             }
             .into(),
             auto_auth: checked(self.auto_auth),
-            retry_interval: text(self.retry).parse().context("重试间隔必须是整数")?,
-            service_mode: checked(self.service_mode),
+            retry_interval: self.config.retry_interval,
+            service_mode: true,
             launch_gui_on_login: checked(self.login),
             hide_window_on_login: checked(self.hidden),
             desktop_notify: checked(self.notify),
@@ -823,6 +832,11 @@ impl Window {
             State::Idle if snapshot.message == "已断开" => (3, IDI_APPLICATION),
             _ => (2, IDI_APPLICATION),
         };
+        let id = if self.colored_icons {
+            id
+        } else {
+            id + if theme::taskbar_dark() { 20 } else { 10 }
+        };
         self.tray.hIcon = resource_icon(id, icon);
         self.tray.uFlags = NIF_TIP | NIF_ICON;
         copy_wide(
@@ -877,20 +891,19 @@ impl Window {
         unsafe {
             KillTimer(self.hwnd, NOTICE_TIMER);
         }
-        if self.subscription_connected {
-            if let Some(deadline) = self
+        if self.subscription_connected
+            && let Some(deadline) = self
                 .state_notifications
                 .deadline(self.config.desktop_notify)
-            {
-                let milliseconds = deadline
-                    .saturating_duration_since(Instant::now())
-                    .as_millis()
-                    .saturating_add(1)
-                    .clamp(10, u32::MAX as u128) as u32;
-                // A timer exists only while an unreported outage is pending.
-                if unsafe { SetTimer(self.hwnd, NOTICE_TIMER, milliseconds, None) } == 0 {
-                    eprintln!("cannot schedule connection notification");
-                }
+        {
+            let milliseconds = deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis()
+                .saturating_add(1)
+                .clamp(10, u32::MAX as u128) as u32;
+            // A timer exists only while an unreported outage is pending.
+            if unsafe { SetTimer(self.hwnd, NOTICE_TIMER, milliseconds, None) } == 0 {
+                eprintln!("cannot schedule connection notification");
             }
         }
     }
@@ -911,7 +924,7 @@ impl Window {
     fn save_ui_state(&self) {
         let _ = config::atomic_write(
             &Paths::default().state.join("ui_state.json"),
-            &serde_json::json!({"ignored_version":self.ignored_version,"notified_version":self.notified_version}),
+            &serde_json::json!({"ignored_version":self.ignored_version,"notified_version":self.notified_version,"colored_icons":self.colored_icons}),
         );
     }
     fn events(&mut self) {
@@ -923,15 +936,22 @@ impl Window {
                     self.subscription_connected = false;
                     self.schedule_notice();
                     self.status_style(&State::Failed, "服务未连接");
+                    let id = if self.colored_icons {
+                        7
+                    } else if theme::taskbar_dark() {
+                        27
+                    } else {
+                        17
+                    };
+                    self.tray.hIcon = resource_icon(id, IDI_ERROR);
+                    self.tray.uFlags = NIF_TIP | NIF_ICON;
+                    copy_wide(&mut self.tray.szTip, "SYSU NetAuth: 服务未连接");
+                    unsafe {
+                        Shell_NotifyIconW(NIM_MODIFY, &self.tray);
+                    }
                     set_text(self.status, &format!("服务连接已断开：{e}"));
                 }
-                UiEvent::Npcap(result) => match result {
-                    Ok(()) => set_text(self.status, "Npcap 安装程序已启动；完成安装后重新连接"),
-                    Err(e) => {
-                        platform::show_error(&e);
-                        platform::open_url("https://npcap.com/#download");
-                    }
-                },
+
                 UiEvent::Reply(id, result) => match result {
                     Err(e) => {
                         if id == CONNECT {
@@ -948,6 +968,10 @@ impl Window {
                                 }
                                 Err(e) => platform::show_error(&e.to_string()),
                             }
+                        } else if id == LOGS || id == EXPORT {
+                            if let Err(error) = self.show_diagnostics(id, response.data) {
+                                platform::show_error(&error.to_string());
+                            }
                         } else if id == SAVE {
                             set_text(self.status, "设置已保存");
                         }
@@ -955,6 +979,46 @@ impl Window {
                 },
             }
         }
+    }
+    fn show_diagnostics(&self, id: u16, data: serde_json::Value) -> Result<()> {
+        if id == LOGS {
+            let path = Paths::default().state.join("ui-service-log.txt");
+            let log = data["log"].as_str().unwrap_or("暂无日志");
+            std::fs::write(&path, log)?;
+            unsafe {
+                ShellExecuteW(
+                    self.hwnd,
+                    wide("open").as_ptr(),
+                    wide(path.as_os_str()).as_ptr(),
+                    ptr::null(),
+                    ptr::null(),
+                    SW_SHOWNORMAL,
+                );
+            }
+        } else {
+            use windows_sys::Win32::UI::Controls::Dialogs::*;
+            let mut file = [0u16; 32768];
+            copy_wide(&mut file, "SYSUNetAuth-diagnostics.json");
+            let filter = wide("JSON 文件\0*.json\0\0");
+            let extension = wide("json");
+            let title = wide("导出诊断信息（分享前请检查个人信息）");
+            let mut dialog: OPENFILENAMEW = unsafe { mem::zeroed() };
+            dialog.lStructSize = mem::size_of::<OPENFILENAMEW>() as u32;
+            dialog.hwndOwner = self.hwnd;
+            dialog.lpstrFile = file.as_mut_ptr();
+            dialog.nMaxFile = file.len() as u32;
+            dialog.lpstrFilter = filter.as_ptr();
+            dialog.lpstrDefExt = extension.as_ptr();
+            dialog.lpstrTitle = title.as_ptr();
+            dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+            if unsafe { GetSaveFileNameW(&mut dialog) } != 0 {
+                let end = file.iter().position(|c| *c == 0).unwrap_or(file.len());
+                let path = String::from_utf16_lossy(&file[..end]);
+                std::fs::write(path, serde_json::to_vec_pretty(&data)?)?;
+                set_text(self.status, "诊断信息已导出，分享前请检查个人信息");
+            }
+        }
+        Ok(())
     }
     fn command(&mut self, id: u16) {
         match id {
@@ -987,6 +1051,16 @@ impl Window {
                 self.update_options();
             }
             LOGIN => self.update_options(),
+            LOGS | EXPORT => {
+                self.task(Task::Request(id, Action::Diagnostics));
+            }
+            ICON_MONO | ICON_COLOR => {
+                self.colored_icons = id == ICON_COLOR;
+                self.save_ui_state();
+                if let Some(snapshot) = self.snapshot.clone() {
+                    self.update_snapshot(snapshot);
+                }
+            }
             SHOW_PASSWORD => {
                 let show = checked(unsafe { GetDlgItem(self.hwnd, SHOW_PASSWORD as i32) });
                 unsafe {
@@ -1014,23 +1088,14 @@ impl Window {
                     self.update_actions(false, false);
                 }
             }
-            NPCAP => {
-                self.task(Task::InstallNpcap);
-            }
+
             MENU_SHOW => unsafe {
                 ShowWindow(self.hwnd, SW_SHOW);
                 SetForegroundWindow(self.hwnd);
             },
-            MENU_QUIT => {
-                if !self.config.service_mode {
-                    if let Err(e) = platform::service_control(false) {
-                        platform::show_error(&e.to_string());
-                    }
-                }
-                unsafe {
-                    DestroyWindow(self.hwnd);
-                }
-            }
+            MENU_QUIT => unsafe {
+                DestroyWindow(self.hwnd);
+            },
             _ => {}
         }
     }
@@ -1043,7 +1108,26 @@ impl Window {
                 MENU_SHOW as usize,
                 wide("打开配置面板").as_ptr(),
             );
-            AppendMenuW(menu, MF_STRING, MENU_QUIT as usize, wide("退出").as_ptr());
+            AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
+            AppendMenuW(
+                menu,
+                MF_STRING | if self.colored_icons { 0 } else { MF_CHECKED },
+                ICON_MONO as usize,
+                wide("状态图标：系统单色").as_ptr(),
+            );
+            AppendMenuW(
+                menu,
+                MF_STRING | if self.colored_icons { MF_CHECKED } else { 0 },
+                ICON_COLOR as usize,
+                wide("状态图标：彩色").as_ptr(),
+            );
+            AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
+            AppendMenuW(
+                menu,
+                MF_STRING,
+                MENU_QUIT as usize,
+                wide("退出状态程序").as_ptr(),
+            );
             let mut point = POINT::default();
             GetCursorPos(&mut point);
             SetForegroundWindow(self.hwnd);
@@ -1118,7 +1202,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, message: u32, wparam: usize, lpara
                 let is_field = message == WM_CTLCOLORLISTBOX
                     || control == window.username
                     || control == window.password
-                    || control == window.retry
                     || control == window.iface;
                 unsafe {
                     SetTextColor(
@@ -1176,6 +1259,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, message: u32, wparam: usize, lpara
                     .map(|s| s.state.clone())
                     .unwrap_or(State::Idle);
                 window.status_style(&state, &text(window.state));
+                if let Some(snapshot) = window.snapshot.clone() {
+                    window.update_snapshot(snapshot);
+                }
                 unsafe {
                     RedrawWindow(
                         hwnd,
@@ -1253,6 +1339,15 @@ pub fn run() -> Result<()> {
     ensure!(!mutex.is_null(), "GUI mutex");
     let _guard = platform::Handle(mutex);
     if mutex_error == ERROR_ALREADY_EXISTS {
+        if !std::env::args().any(|a| a == "--startup") {
+            unsafe {
+                let existing = FindWindowW(wide("SYSUNetAuthRustWindow").as_ptr(), ptr::null());
+                if !existing.is_null() {
+                    ShowWindow(existing, SW_SHOW);
+                    SetForegroundWindow(existing);
+                }
+            }
+        }
         return Ok(());
     }
     unsafe {
@@ -1336,11 +1431,6 @@ pub fn run() -> Result<()> {
                             UiEvent::Reply(id, result.map_err(|e| e.to_string())),
                         );
                     }
-                    Task::InstallNpcap => post(
-                        target,
-                        &queue,
-                        UiEvent::Npcap(platform::install_npcap().map_err(|e| e.to_string())),
-                    ),
                 }
             }
         })?;
@@ -1444,24 +1534,12 @@ mod tests {
                 GetModuleHandleW(ptr::null()),
                 ptr::null(),
             );
-            window.retry = CreateWindowExW(
-                0,
-                wide("EDIT").as_ptr(),
-                wide("60").as_ptr(),
-                WS_CHILD,
-                0,
-                150,
-                100,
-                30,
-                hwnd,
-                ptr::null_mut(),
-                GetModuleHandleW(ptr::null()),
-                ptr::null(),
-            );
-            assert!(!window.manual.is_null() && !window.iface.is_null() && !window.retry.is_null());
+            assert!(!window.manual.is_null() && !window.iface.is_null());
             check(window.manual, true);
             window.config.iface_mode = "manual".into();
             window.config.iface = "first".into();
+            window.config.retry_interval = 125;
+            window.config.service_mode = false;
             let first = Adapter {
                 id: "first".into(),
                 name: "Ethernet".into(),
@@ -1482,6 +1560,8 @@ mod tests {
             usb.name = "USB Ethernet renamed".into();
             window.refresh_adapters(&[usb.clone(), first.clone()]);
             assert_eq!(SendMessageW(window.iface, CB_GETCURSEL, 0, 0), 0);
+            assert_eq!(window.collect().unwrap().retry_interval, 125);
+            assert!(window.collect().unwrap().service_mode);
             assert_eq!(window.collect().unwrap().iface, "usb");
             window.refresh_adapters(&[first]);
             assert_eq!(window.collect().unwrap().iface, "usb");

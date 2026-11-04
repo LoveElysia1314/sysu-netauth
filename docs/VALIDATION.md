@@ -40,7 +40,7 @@ CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER='sudo -n --' cargo test --locked --
 - 发行标签、附件完整性、架构一致性、校验值及安装辅助逻辑。
 - Windows 安装时修复已有文件权限，新建日志与轮转日志继承仅 SYSTEM 和管理员可访问的权限。
 
-网络命名空间测试不能代替校园交换机、Npcap 驱动和 Windows 电源事件的实机验证。联网探测沿系统路由发送，成功可能来自 Wi-Fi 等其他接口。
+网络命名空间测试不能代替校园交换机、Windows 系统网卡驱动和 Windows 电源事件的实机验证。联网探测沿系统路由发送，成功可能来自 Wi-Fi 等其他接口。
 
 ## 设备回归
 

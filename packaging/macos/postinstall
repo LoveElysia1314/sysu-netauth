@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+[ "${3:-/}" = / ] || exit 1
+resources=/Applications/SYSUNetAuth.app/Contents/Resources
+/usr/bin/codesign --verify --strict /Applications/SYSUNetAuth.app
+uid=$(/usr/bin/stat -f %u /dev/console)
+case "$uid" in
+    ''|0|*[!0-9]*) /bin/sh "$resources/install-macos.sh" ;;
+    *) /bin/sh "$resources/install-macos.sh" "$uid" ;;
+esac

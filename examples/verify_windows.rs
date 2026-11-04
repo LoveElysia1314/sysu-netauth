@@ -59,11 +59,11 @@ impl Pe {
     }
     fn offset(&self, rva: u32) -> Result<usize> {
         for &(start, size, raw, raw_size) in &self.sections {
-            if let Some(delta) = rva.checked_sub(start) {
-                if delta < size.max(raw_size as u32) {
-                    ensure!((delta as usize) < raw_size, "RVA has no file data");
-                    return raw.checked_add(delta as usize).context("offset overflow");
-                }
+            if let Some(delta) = rva.checked_sub(start)
+                && delta < size.max(raw_size as u32)
+            {
+                ensure!((delta as usize) < raw_size, "RVA has no file data");
+                return raw.checked_add(delta as usize).context("offset overflow");
             }
         }
         anyhow::bail!("RVA outside PE sections")
@@ -161,7 +161,7 @@ fn verify(path: &Path, gui: bool, machine: u16) -> Result<()> {
         );
         ensure!(
             dll != "wpcap.dll" && dll != "packet.dll",
-            "Npcap must be loaded only when needed"
+            "third-party packet capture dependency is forbidden"
         );
     }
     if gui {

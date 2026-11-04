@@ -10,9 +10,10 @@
 
 | 平台 | 抓包与通知 |
 | --- | --- |
-| Windows | 动态加载 Npcap；使用 EAPOL 过滤器、`pcap_getevent` 和 IP Helper 网络通知 |
+| Windows | 使用系统自带 NDISUIO 驱动，以可取消的异步 I/O 收发 EAPOL；通过 IP Helper 接收网络通知 |
 | Linux | 绑定 EtherType 的 AF_PACKET 套接字和 rtnetlink 通知 |
 | macOS | BPF 抓包、SystemConfiguration 网络通知和 IOKit 电源通知 |
+
 
 凭据使用 GBK 编码，协议为 EAP-MD5。引擎校验帧长、目的地址和认证端 MAC；配置变化、网卡切换及停止操作递增会话代次，使旧回调失效。
 

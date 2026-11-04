@@ -16,7 +16,7 @@ The application/installer icon uses the Ethernet port, blue shield and green acc
 ## Generated outputs
 
 - `generated/svg`: portable vector previews and product icon.
-- `generated/windows`: ICO containers with independent vector renders at 16, 20, 24, 32, 40, 48, 64, 128 and 256px; PNG RGBA entries supported by Windows 10/11.
+- `generated/windows`: 19 ICO containers (application, six colour states, six black and six white states) with independent vector renders at 16, 20, 24, 32, 40, 48, 64, 128 and 256px; PNG RGBA entries supported by Windows 10/11.
 - `macos/Sources/NetAuthArtwork/GeneratedIconSource.swift`: embedded source data for AppKit, generated rather than separately hand-maintained. No runtime file paths or external JSON resources are required.
 
 Regenerate from the repository root on macOS (Command Line Tools, no third-party Python packages):
@@ -32,3 +32,5 @@ python3 -m unittest discover -s tests -p test_icon_assets.py
 Commit the source and generated outputs together. The manifest records source/output hashes; CI rejects stale SVG, Swift data or ICO provenance. ICO structure, dimensions, offsets, RGBA type and PNG CRCs are checked without native Windows APIs. Actual Windows rendering/resource compilation remains a Windows CI or device check.
 
 Generate the macOS light/dark/selection gallery with `swift run --package-path macos -c release NetAuthIconPreview dist/menu-bar-icons.png`.
+
+Windows defaults to monochrome and selects black/white variants from the taskbar theme. Colour remains an optional tray-menu preference. macOS Dock/Finder ICNS is generated during `build-macos-gui.sh` from the same application artwork using `--export-macos`; no separate editable bitmap source is maintained.

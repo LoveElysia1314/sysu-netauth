@@ -457,6 +457,24 @@ unsafe extern "system" fn control_proc(
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
 }
 
+// The taskbar can use a different theme from application windows.
+pub(super) fn taskbar_dark() -> bool {
+    unsafe {
+        let mut light = 1u32;
+        let mut len = std::mem::size_of_val(&light) as u32;
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize").as_ptr(),
+            wide("SystemUsesLightTheme").as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&mut light as *mut u32).cast(),
+            &mut len,
+        );
+        light == 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

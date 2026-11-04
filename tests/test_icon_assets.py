@@ -30,7 +30,7 @@ class IconAssetsTests(unittest.TestCase):
                 self.assertEqual(path.read_text(encoding='utf-8'), expected)
         manifest = json.loads((generator.GENERATED/'windows/manifest.json').read_text(encoding='utf-8'))
         self.assertEqual(manifest, generator.windows_manifest())
-        self.assertEqual(len(manifest['files']), 7)
+        self.assertEqual(len(manifest['files']), 19)
 
     def test_ico_sizes_offsets_and_png_integrity(self):
         for path in sorted((generator.GENERATED/'windows').glob('*.ico')):
@@ -62,6 +62,9 @@ class IconAssetsTests(unittest.TestCase):
     def test_windows_resource_ids_preserve_existing_state_mapping(self):
         rc = (ROOT/'packaging/windows.rc').read_text(encoding='utf-8')
         actual = {int(i): p for i,p in re.findall(r'(\d+) ICON "([^"]+)"', rc)}
+        for offset, suffix in [(10, 'light'), (20, 'dark')]:
+            for index, name in enumerate(['ready','disconnected','authenticated','authenticating','failed','unavailable'],2):
+                self.assertEqual(actual[offset+index], f'../assets/icons/generated/windows/{name}-{suffix}.ico')
         for index, name in enumerate(['app','ready','disconnected','authenticated','authenticating','failed','unavailable'],1):
             self.assertEqual(actual[index], f'../assets/icons/generated/windows/{name}.ico')
             self.assertTrue((ROOT/'packaging'/actual[index]).is_file())

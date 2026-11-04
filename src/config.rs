@@ -42,7 +42,7 @@ impl Default for Config {
             service_mode: true,
             launch_gui_on_login: false,
             hide_window_on_login: true,
-            desktop_notify: true,
+            desktop_notify: false,
         }
     }
 }

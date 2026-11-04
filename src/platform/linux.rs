@@ -182,13 +182,14 @@ pub fn adapters() -> Result<Vec<Adapter>> {
     if let Ok(routes) = fs::read_to_string("/proc/net/route") {
         for line in routes.lines().skip(1) {
             let fields: Vec<_> = line.split_whitespace().collect();
-            if fields.len() > 3 && fields[1] == "00000000" {
-                if let (Some(a), Ok(gateway)) = (
+            if fields.len() > 3
+                && fields[1] == "00000000"
+                && let (Some(a), Ok(gateway)) = (
                     result.iter_mut().find(|a| a.name == fields[0]),
                     u32::from_str_radix(fields[2], 16),
-                ) {
-                    a.gateway = Ipv4Addr::from(gateway.to_le_bytes()).to_string();
-                }
+                )
+            {
+                a.gateway = Ipv4Addr::from(gateway.to_le_bytes()).to_string();
             }
         }
     }

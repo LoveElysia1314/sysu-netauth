@@ -54,10 +54,9 @@ fn recv_start(rx: &mpsc::Receiver<Event>, client: [u8; 6]) {
         if let Event::Packet(_, bytes) = rx
             .recv_timeout(end.saturating_duration_since(Instant::now()))
             .expect("service did not initiate authentication")
+            && bytes.starts_with(&expected)
         {
-            if bytes.starts_with(&expected) {
-                return;
-            }
+            return;
         }
     }
 }
@@ -329,12 +328,11 @@ fn recv(rx: &mpsc::Receiver<Event>, code: u8, kind: Option<u8>) -> Vec<u8> {
     while Instant::now() < end {
         if let Ok(Event::Packet(_, bytes)) =
             rx.recv_timeout(end.saturating_duration_since(Instant::now()))
+            && let Some(p) = protocol::parse(&bytes)
+            && p.code == code
+            && p.kind == kind
         {
-            if let Some(p) = protocol::parse(&bytes) {
-                if p.code == code && p.kind == kind {
-                    return bytes;
-                }
-            }
+            return bytes;
         }
     }
     panic!("no EAP packet code={code} kind={kind:?}");

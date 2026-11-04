@@ -4,11 +4,11 @@
 
 ## 安装
 
-从[发布页](https://github.com/LoveElysia1314/sysu-netauth/releases)下载与系统架构对应的 `Setup` 文件：x64 选择 `Rust_msvc_x64`，Windows on ARM 选择 `Rust_msvc_arm64`。x64 的 GNU 构建提供相同功能。
+从[发布页](https://github.com/LoveElysia1314/sysu-netauth/releases)下载与系统架构对应的 `Setup` 文件：x64 选择 `Rust_msvc_x64`，Windows on ARM 选择 `Rust_msvc_arm64`。
 
-1. 运行安装包。认证需要 [Npcap](https://npcap.com/#download)，官方安装程序会选择对应架构的驱动和 DLL。
+1. 运行安装包。程序使用 Windows 自带的 NDISUIO 驱动，不需要额外下载安装驱动。
 2. 打开 SYSU NetAuth，填写 NetID 和密码，点击“重新连接”。默认自动选择已连接的有线网卡。
-3. 启用“启动后自动认证”和“认证服务独立于程序运行”，即可关闭界面并由服务保持认证。
+3. 启用“服务启动后自动认证”，即可关闭界面并由服务保持认证。
 
 手动选卡时，程序保存设备 ID。网卡插拔后列表自动刷新；所选设备被拔出时显示为“未连接”，不会自动保存为另一个设备。
 
@@ -20,19 +20,22 @@
 
 程序只提示正式版更新，也可点击“检查更新”主动检查。安装的测试版会在同版本正式版发布后收到提醒；后续测试版从[发布页](https://github.com/LoveElysia1314/sysu-netauth/releases)手动下载。
 
-启用“登录时启动程序”可在登录后打开界面；“启动时隐藏窗口”将界面收至托盘。“认证服务独立于程序运行”控制服务是否随系统启动，以及退出界面后是否继续运行。
+建议完成配置后退出界面，由后台服务负责日常认证。后台服务独立运行，退出界面不停止认证。可选开启“开机后启动界面程序”（默认关闭），在当前系统用户进入桌面后驻留托盘；“开机后隐藏配置窗口”默认开启，手动打开应用始终显示配置窗口。通知默认关闭，勾选“认证状态变化后通知”后需保持界面程序驻留托盘。
 
-## 便携包
+重试间隔由程序管理，不再出现在界面中；保存时保留已有配置值。旧配置字段继续兼容，新的 GUI 保存设置时固定使用独立服务模式。菜单中可选系统单色或彩色状态图标，默认单色并跟随任务栏外观。
 
-将 ZIP 解压到固定目录，在管理员 PowerShell 中注册并启动服务：
+“网络状态”提供“查看日志”和“导出诊断”：读取最近 32 KiB 服务日志，遮盖当前账号和密码，不导出配置；分享诊断前仍应检查其他个人信息。
+
+## 系统有线认证
+
+Windows 自带的有线自动配置服务可能占用同一网卡。如果此前启用了系统有线认证，先停用该服务，再使用本客户端。管理员 PowerShell：
 
 ```powershell
-.\sysu_netauth_service.exe --install
-sc.exe start SYSUNetAuth
-.\sysu_netauth_gui.exe
+Stop-Service dot3svc
+Set-Service dot3svc -StartupType Disabled
 ```
 
-便携包不会自动管理安装、升级或卸载。日常使用建议选择 Setup 安装包。
+这不会停止 Wi-Fi 服务。以后需要恢复 Windows 系统有线认证时，先停止 SYSU NetAuth 服务，再将 `dot3svc` 改为 `Manual` 并启动。
 
 ## 连接通知
 
@@ -40,15 +43,15 @@ sc.exe start SYSUNetAuth
 
 连接持续中断 5 秒后提醒一次，恢复后再提示一次。重试不会重新开始中断计时，手动断开和系统休眠不会触发断线提醒。防抖只影响通知，自动重连照常执行。
 
-可通过界面中的桌面通知开关关闭这些提醒。
+可通过“认证状态变化后通知”开关关闭这些提醒。
 
 ## 故障排查
 
 | 现象 | 检查方法 |
 | --- | --- |
-| 无法认证 | 确认 Npcap、有线网卡、NetID 和密码，并退出其他认证客户端 |
+| 无法认证 | 确认有线网卡、NetID 和密码，检查系统有线认证是否占用网卡，并退出其他认证客户端 |
 | 界面提示服务未连接 | 在管理员终端执行 `sc.exe query SYSUNetAuth`，需要时执行 `sc.exe start SYSUNetAuth` |
-| 唤醒后未恢复认证 | 检查自动认证和独立服务设置，并按[恢复排查](RESUME.md)查看日志 |
+| 唤醒后未恢复认证 | 检查自动认证和后台服务状态，并按[恢复排查](RESUME.md)查看日志 |
 | 安装或卸载失败 | 查看 `%TEMP%` 中的 Setup Log 或 Uninstall Log |
 
 连接日志为 `%ProgramData%\SYSUNetAuth\service.log`。可使用 `Setup.exe /LOG="C:\path\setup.log"` 或安装目录中的 `unins000.exe /LOG="C:\path\uninstall.log"` 指定安装、卸载日志的位置。
@@ -57,4 +60,4 @@ sc.exe start SYSUNetAuth
 
 升级时运行新的 Setup 安装包，沿用现有目录和设置。安装程序会停止应用与服务后替换文件。
 
-在 Windows“已安装的应用”中卸载 SYSU NetAuth。卸载向导可删除保存的账号和设置，并询问是否打开 Npcap 卸载向导；其他网络工具仍使用 Npcap 时应保留驱动。
+在 Windows“已安装的应用”中卸载 SYSU NetAuth。卸载向导可删除保存的账号和设置。系统自带的网络驱动不随客户端卸载。

@@ -37,7 +37,12 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
         item.menu = menu
         updateStatusItem("idle")
         iconAppearanceObserver = item.button?.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
-            DispatchQueue.main.async { self?.redrawStatusIcon() }
+            guard let self = self, !self.iconRedrawPending else { return }
+            self.iconRedrawPending = true
+            DispatchQueue.main.async { [weak self] in
+                self?.iconRedrawPending = false
+                self?.redrawStatusIcon()
+            }
         }
         login.target = self
         login.action = #selector(changeLogin)
@@ -106,7 +111,7 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
                 footer.stringValue = "登录项需要批准，请在系统设置 → 通用 → 登录项中允许 SYSU NetAuth。"
             }
         } else {
-            login.title = "登录时启动程序（需要 macOS 13+）"
+            login.title = "开机后启动界面程序（需要 macOS 13+）"
             login.isEnabled = false
             hidden.isEnabled = false
         }
@@ -175,7 +180,7 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
         }
     }
     @objc func testNotification() {
-        guard notify.state == .on else { footer.stringValue = "请先启用“状态变化时通知”并允许通知权限。"; showWindow(); return }
+        guard notify.state == .on else { footer.stringValue = "请先启用“认证状态变化后通知”并允许通知权限。"; showWindow(); return }
         postNotification(title: "SYSU NetAuth · 离线测试", body: "这是本机通知测试，未进行校园网认证。", reportResult: true)
     }
     func observeDesktop(_ snapshot: Snapshot) {
@@ -199,7 +204,7 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
         let parent = NSMenuItem(title: "菜单栏图标", action: nil, keyEquivalent: "")
         let menu = NSMenu()
         menu.autoenablesItems = false
-        for (tag, label) in [(0, "单色 · 跟随系统"), (1, "彩色 · Windows 配色")] {
+        for (tag, label) in [(0, "单色 · 跟随系统"), (1, "彩色 · 共享状态配色")] {
             let item = NSMenuItem(title: label, action: #selector(changeIconMode(_:)), keyEquivalent: "")
             item.tag = tag
             item.target = self
@@ -222,7 +227,15 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
     func redrawStatusIcon() {
         guard let button = statusItem?.button else { return }
         let colored = UserDefaults.standard.bool(forKey: "coloredStatusIcon")
-        button.effectiveAppearance.performAsCurrentDrawingAppearance {
+        let appearance = button.effectiveAppearance
+        let name = appearance.bestMatch(from: [.aqua, .darkAqua,
+            .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua]) ?? appearance.name
+        let key = StatusIconRenderKey(mark: currentMark, colored: colored, appearance: name.rawValue)
+        guard iconRenderKey != key else { return }
+        // Assign before changing the button: AppKit can notify effectiveAppearance again
+        // during drawing. Replacing its images on every notification creates a redraw loop.
+        iconRenderKey = key
+        appearance.performAsCurrentDrawingAppearance {
             button.image = StatusIcon.image(currentMark, colored: colored)
             button.alternateImage = StatusIcon.image(currentMark, colored: colored, highlighted: true)
         }
@@ -258,7 +271,9 @@ extension AppDelegate: NSWindowDelegate, UNUserNotificationCenterDelegate {
             }
         }
     }
-    func applicationWillTerminate(_ notification: Notification) { pollTimer?.invalidate() }
+    func applicationWillTerminate(_ notification: Notification) {
+        pollTimer?.invalidate(); noticeTimer?.invalidate(); iconAppearanceObserver?.invalidate()
+    }
     func shouldStartHidden() -> Bool {
         let event = NSAppleEventManager.shared().currentAppleEvent
         let loginEvent = event?.paramDescriptor(forKeyword: AEKeyword(keyAEPropData))?

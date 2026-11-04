@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+[ "${3:-/}" = / ] || { echo 'Install on the running system volume.' >&2; exit 1; }
+for process in $(pgrep -f '^/Applications/SYSUNetAuth.app/Contents/MacOS/SYSUNetAuth([[:space:]]|$)' || true); do
+    kill -TERM "$process" 2>/dev/null || true
+done

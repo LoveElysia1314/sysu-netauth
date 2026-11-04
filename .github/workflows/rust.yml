@@ -85,6 +85,14 @@ jobs:
         run: cargo test --locked --test linux_network -- --ignored --nocapture
       - if: runner.os == 'Windows'
         run: ./scripts/build.ps1 -SkipInstaller -Target ${{ matrix.target }}
+      - name: Test Windows installer lifecycle and native-only payload
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          ./scripts/build.ps1 -Target ${{ matrix.target }}
+          if ($LASTEXITCODE -ne 0) { throw 'Windows installer build failed' }
+          $setup = Get-ChildItem dist/SYSUNetAuth_Rust_msvc_x64_Setup_*.exe | Select-Object -ExpandProperty FullName
+          ./scripts/test-windows-package.ps1 -Setup $setup
       - if: runner.os == 'Windows' && inputs.release_tag != ''
         run: |
           $dist = if ('${{ matrix.arch }}' -eq 'arm64') { 'dist/arm64/sysu_netauth' } else { 'dist/sysu_netauth' }

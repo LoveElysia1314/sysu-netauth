@@ -251,10 +251,10 @@ impl Engine {
         self.stop.clone()
     }
     fn drain_network(&mut self) {
-        if self.network.take() {
-            if let Err(e) = self.network_changed() {
-                self.failed(&e.to_string());
-            }
+        if self.network.take()
+            && let Err(e) = self.network_changed()
+        {
+            self.failed(&e.to_string());
         }
     }
     fn publish(&mut self) {
@@ -324,10 +324,10 @@ impl Engine {
             self.failed(&e.to_string());
             return;
         }
-        if self.config.auto_auth {
-            if let Err(e) = self.authenticate() {
-                self.failed(&e.to_string());
-            }
+        if self.config.auto_auth
+            && let Err(e) = self.authenticate()
+        {
+            self.failed(&e.to_string());
         }
     }
     fn refresh_adapters(&mut self) -> Result<()> {
@@ -556,6 +556,17 @@ impl Engine {
                     self.refresh_adapters()?;
                     Ok(serde_json::to_value(&self.adapters)?)
                 }
+                Action::Preferences => {
+                    let mut value = serde_json::to_value(&self.config)?;
+                    value.as_object_mut().unwrap().remove("username");
+                    value.as_object_mut().unwrap().remove("password");
+                    Ok(value)
+                }
+                Action::Diagnostics => Ok(serde_json::json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "state": self.snapshot.state,
+                    "log": crate::diagnostics::read_log(&self.paths, &self.config)?
+                })),
                 Action::GetConfig => Ok(serde_json::to_value(&self.config)?),
                 Action::Authenticate => {
                     self.connect()?;
@@ -644,10 +655,9 @@ impl Engine {
             && self.config.auto_auth
             && !self.manual_disconnect
             && !self.suspended
+            && let Err(error) = self.authenticate()
         {
-            if let Err(error) = self.authenticate() {
-                self.failed(&error.to_string());
-            }
+            self.failed(&error.to_string());
         }
         Ok(())
     }
@@ -685,11 +695,11 @@ impl Engine {
             self.failed("认证超时");
         }
         if self.start_deadline.is_some_and(|d| d <= now) {
-            if let (Some(session), Some(adapter)) = (&self.session, &self.snapshot.adapter) {
-                if let Err(e) = session.capture.send(&protocol::control(adapter.mac, 1)) {
-                    self.failed(&e.to_string());
-                    return;
-                }
+            if let (Some(session), Some(adapter)) = (&self.session, &self.snapshot.adapter)
+                && let Err(e) = session.capture.send(&protocol::control(adapter.mac, 1))
+            {
+                self.failed(&e.to_string());
+                return;
             }
             self.start_deadline = Some(now + Duration::from_secs(1));
         }
@@ -699,11 +709,12 @@ impl Engine {
                 self.failed(&e.to_string());
             }
         }
-        if self.update_deadline <= now && !self.snapshot.update.checking {
-            if let Err(e) = self.start_update(false) {
-                eprintln!("update: {e}");
-                self.update_deadline = now + Duration::from_secs(1800);
-            }
+        if self.update_deadline <= now
+            && !self.snapshot.update.checking
+            && let Err(e) = self.start_update(false)
+        {
+            eprintln!("update: {e}");
+            self.update_deadline = now + Duration::from_secs(1800);
         }
     }
     fn timeout(&self) -> Option<Duration> {
@@ -772,10 +783,10 @@ impl Engine {
                         }
                     }
                     let _ = self.refresh_adapters();
-                    if let Some(active) = &self.snapshot.adapter {
-                        if let Some(a) = self.adapters.iter().find(|a| a.id == active.id) {
-                            self.snapshot.adapter = Some(a.clone());
-                        }
+                    if let Some(active) = &self.snapshot.adapter
+                        && let Some(a) = self.adapters.iter().find(|a| a.id == active.id)
+                    {
+                        self.snapshot.adapter = Some(a.clone());
                     }
                     self.snapshot.state = State::Authenticated;
                     crate::diagnostics::record(&self.paths, "authenticated; Internet reachable");
@@ -875,6 +886,29 @@ mod tests {
         e.set_adapters(vec![]);
         assert!(rx.recv().unwrap().unwrap().adapters.is_empty());
         assert_eq!(e.snapshot.state, State::Idle);
+    }
+    #[test]
+    fn preferences_exclude_credentials_and_preserve_internal_retry_settings() {
+        let mut e = engine();
+        e.config.username = "offline-user".into();
+        e.config.password = "offline-password".into();
+        e.config.retry_interval = 125;
+        let (tx, rx) = mpsc::sync_channel(1);
+        e.call(Call {
+            request: crate::ipc::Request {
+                version: 1,
+                id: 42,
+                action: Action::Preferences,
+            },
+            reply: tx,
+            updates: None,
+        });
+        let response = rx.recv().unwrap();
+        assert!(response.ok);
+        assert_eq!(response.id, 42);
+        assert_eq!(response.data["retry_interval"], 125);
+        assert!(response.data.get("username").is_none());
+        assert!(response.data.get("password").is_none());
     }
     fn engine() -> Engine {
         let (tx, _) = mpsc::sync_channel(8);
