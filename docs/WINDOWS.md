@@ -1,28 +1,60 @@
 # Windows 安装与维护
 
-支持 Windows 10/11 x64 与 ARM64（实验性），安装和管理后台服务需要管理员权限。
+支持 Windows 10/11 x64 和 ARM64。安装、配置及服务管理需要管理员权限。
 
 ## 安装
 
-从 [Releases](https://github.com/peterrobot/sysu-netauth/releases) 下载 Setup EXE。x64 选择 `Rust_msvc_x64` 或 `Rust_gnu_x64`；Windows on ARM 选择 `Rust_msvc_arm64`。`Python_x64` 为原 Python 版。
+从[发布页](https://github.com/LoveElysia1314/sysu-netauth/releases)下载与系统架构对应的 `Setup` 文件：x64 选择 `Rust_msvc_x64`，Windows on ARM 选择 `Rust_msvc_arm64`。x64 的 GNU 构建提供相同功能。
 
-1. 运行 Setup，按提示安装 [Npcap](https://npcap.com/#download)。官方安装程序自动选择 x64 / ARM64 驱动和 DLL；不要手动复制其他架构的 DLL。Python 版需开启 Npcap 的 WinPcap API 兼容模式。
-2. 打开 SYSU NetAuth，填写 NetID 和密码，选择有线网卡并认证。
-3. 启用自动认证和「服务独立运行」，即可退出 GUI 并由服务保持认证。
+1. 运行安装包。认证需要 [Npcap](https://npcap.com/#download)，官方安装程序会选择对应架构的驱动和 DLL。
+2. 打开 SYSU NetAuth，填写 NetID 和密码，点击“重新连接”。默认自动选择已连接的有线网卡。
+3. 启用“启动后自动认证”和“认证服务独立于程序运行”，即可关闭界面并由服务保持认证。
 
-请先退出其他 802.1X 客户端。Rust 版支持睡眠和休眠恢复后自动重认证。
+手动选卡时，程序保存设备 ID。网卡插拔后列表自动刷新；所选设备被拔出时显示为“未连接”，不会自动保存为另一个设备。
 
-## 版本切换
+当前服务运行期间，手动断开后，插拔网卡和系统唤醒都保持断开；点击“重新连接”才会恢复认证。重新启动服务时按自动认证设置执行。修改设置后点击“重新连接”，会保存配置并启动一次认证。
 
-Rust 和 Python 共用 `%ProgramData%\SYSUNetAuth` 配置与 `SYSUNetAuth` 服务，每次只能使用一种版本的 GUI 和服务。切换前备份配置目录，其中包含账号和密码。
+## 配置与更新
 
-Python → Rust 首次迁移时，原配置会备份为 `config.json.python-backup`。返回 Python 时，如需恢复此备份，应先停止服务，再将其复制为 `config.json`；备份可能不包含迁移后修改的密码或设置。
+配置和日志位于 `%ProgramData%\SYSUNetAuth`，仅 SYSTEM 和管理员可访问。`config.json` 包含明文凭据，分享日志时请勿附带该文件。
+
+程序只提示正式版更新，也可点击“检查更新”主动检查。安装的测试版会在同版本正式版发布后收到提醒；后续测试版从[发布页](https://github.com/LoveElysia1314/sysu-netauth/releases)手动下载。
+
+启用“登录时启动程序”可在登录后打开界面；“启动时隐藏窗口”将界面收至托盘。“认证服务独立于程序运行”控制服务是否随系统启动，以及退出界面后是否继续运行。
+
+## 便携包
+
+将 ZIP 解压到固定目录，在管理员 PowerShell 中注册并启动服务：
+
+```powershell
+.\sysu_netauth_service.exe --install
+sc.exe start SYSUNetAuth
+.\sysu_netauth_gui.exe
+```
+
+便携包不会自动管理安装、升级或卸载。日常使用建议选择 Setup 安装包。
+
+## 连接通知
+
+主动点击连接后，认证成功会显示通知。自动重连在 5 秒内恢复时保持静默，界面和托盘仍实时更新状态。
+
+连接持续中断 5 秒后提醒一次，恢复后再提示一次。重试不会重新开始中断计时，手动断开和系统休眠不会触发断线提醒。防抖只影响通知，自动重连照常执行。
+
+可通过界面中的桌面通知开关关闭这些提醒。
 
 ## 故障排查
 
-- **无法认证：** 检查 Npcap、有线网卡、NetID 与密码，并退出其他认证客户端。
-- **服务未运行：** 在管理员 PowerShell 中执行 `sc.exe query SYSUNetAuth`；需要时执行 `sc.exe start SYSUNetAuth`。
-- **连接中断：** 查看 `%ProgramData%\SYSUNetAuth\service.log`；Rust 版休眠问题另见 [恢复排查](../apps/rust/docs/RESUME.md)。
-- **安装或卸载失败：** 在 `%TEMP%` 查找 `Setup Log` 或 `Uninstall Log`。也可从管理员终端运行 `Setup.exe /LOG="C:\path\setup.log"`，或安装目录中的 `unins000.exe /LOG="C:\path\uninstall.log"`，指定一个可写路径。
+| 现象 | 检查方法 |
+| --- | --- |
+| 无法认证 | 确认 Npcap、有线网卡、NetID 和密码，并退出其他认证客户端 |
+| 界面提示服务未连接 | 在管理员终端执行 `sc.exe query SYSUNetAuth`，需要时执行 `sc.exe start SYSUNetAuth` |
+| 唤醒后未恢复认证 | 检查自动认证和独立服务设置，并按[恢复排查](RESUME.md)查看日志 |
+| 安装或卸载失败 | 查看 `%TEMP%` 中的 Setup Log 或 Uninstall Log |
 
-便携 ZIP 不包含安装程序，不会自动管理服务或升级；普通用户建议使用 Setup。
+连接日志为 `%ProgramData%\SYSUNetAuth\service.log`。可使用 `Setup.exe /LOG="C:\path\setup.log"` 或安装目录中的 `unins000.exe /LOG="C:\path\uninstall.log"` 指定安装、卸载日志的位置。
+
+## 升级与卸载
+
+升级时运行新的 Setup 安装包，沿用现有目录和设置。安装程序会停止应用与服务后替换文件。
+
+在 Windows“已安装的应用”中卸载 SYSU NetAuth。卸载向导可删除保存的账号和设置，并询问是否打开 Npcap 卸载向导；其他网络工具仍使用 Npcap 时应保留驱动。

@@ -1,0 +1,19 @@
+name: macOS GUI offline tests
+on:
+  push:
+    paths: ['macos/**', 'assets/icons/**', 'scripts/generate-icons.py', 'tests/test_icon_assets.py', 'packaging/windows.rc', 'scripts/setup.template.iss', 'scripts/*macos*.sh', 'packaging/*gui-helper.plist', '.github/workflows/macos-gui.yml']
+  pull_request:
+    paths: ['macos/**', 'assets/icons/**', 'scripts/generate-icons.py', 'tests/test_icon_assets.py', 'packaging/windows.rc', 'scripts/setup.template.iss', 'scripts/*macos*.sh', 'packaging/*gui-helper.plist', '.github/workflows/macos-gui.yml']
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: python3 scripts/generate-icons.py --check
+      - run: python3 -m unittest discover -s tests -p test_icon_assets.py
+      - run: swift test --package-path macos
+      - run: sh scripts/test-macos-gui-offline.sh
+      - run: sh scripts/build-macos-gui.sh

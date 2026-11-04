@@ -1,0 +1,23 @@
+{
+  "source_sha256": "ca0f2b9cc86e76b82877ca0073b29eaa04b273a44572e647ebaefe38c6362e56",
+  "sizes": [
+    16,
+    20,
+    24,
+    32,
+    40,
+    48,
+    64,
+    128,
+    256
+  ],
+  "files": {
+    "app.ico": "a42a64de578a875bfcefed9c474ab6a4d759182eb861dee0b79385db6143653c",
+    "authenticated.ico": "ffde3ea86e497c6596f34dda33a46b0dcf37bb00fc4511b08aa6c8ab4a49fca6",
+    "authenticating.ico": "3799c6a0a13f4ea64bac91c4937c30591b784922d4873b41465cf5a0c23e50a3",
+    "disconnected.ico": "8aa5aa4c47243c688da29356be36d26a2f0da8f94dac8f66edf76ff341358e51",
+    "failed.ico": "0e60d949bc741f58a0ccac404e41fd0f77e6ea7c924b251d895d1d215ef6bf79",
+    "ready.ico": "eed91b7bb5ebac20f4b6985be034391ae579f26b91eef6e18e782bcd08f39bd8",
+    "unavailable.ico": "f0f812962d4411f33cdcd625d6839fe0d3a14d73db9b4b0eb8b83ea52fd69c56"
+  }
+}

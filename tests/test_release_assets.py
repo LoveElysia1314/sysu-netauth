@@ -23,12 +23,12 @@ class ReleaseAssetsTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="netauth release assets ")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.info = {"tag": "v0.7.0-alpha.0", "version": "0.7.0-alpha.0", "python_version": "0.7.0a0", "commit": "expected-commit"}
+        self.info = {"tag": "v0.7.0-alpha.0", "version": "0.7.0-alpha.0", "commit": "expected-commit"}
         self.metadata = self.root / "release-version.json"
         self.metadata.write_text(json.dumps(self.info), encoding="utf-8")
         self.output = self.root / "output"
         self.output.mkdir()
-        for label, version in (("Rust_msvc_x64", "0.7.0-alpha.0"), ("Rust_msvc_arm64", "0.7.0-alpha.0"), ("Rust_gnu_x64", "0.7.0-alpha.0"), ("Python_x64", "0.7.0a0")):
+        for label, version in (("Rust_msvc_x64", "0.7.0-alpha.0"), ("Rust_msvc_arm64", "0.7.0-alpha.0"), ("Rust_gnu_x64", "0.7.0-alpha.0")):
             names = [f"SYSUNetAuth_{label}_Setup_v{version}.exe", f"SYSUNetAuth_{label}_Portable_v{version}.zip"]
             checksums = []
             for name in names:
@@ -68,12 +68,12 @@ class ReleaseAssetsTests(unittest.TestCase):
                 member.mode = 0o755
                 archive.addfile(member, io.BytesIO(payload))
 
-    def test_collects_all_seven_variants_and_checksums(self):
+    def test_collects_all_six_variants_and_checksums(self):
         result = self.prepare()
-        self.assertEqual(len(result), 18)
-        self.assertEqual(sum(path.name.endswith(".exe") for path in result), 4)
-        self.assertEqual(sum("_Portable_" in path.name for path in result), 4)
-        self.assertEqual(sum(path.suffix == ".zip" for path in result), 4)
+        self.assertEqual(len(result), 15)
+        self.assertEqual(sum(path.name.endswith(".exe") for path in result), 3)
+        self.assertEqual(sum("_Portable_" in path.name for path in result), 3)
+        self.assertEqual(sum(path.suffix == ".zip" for path in result), 3)
         linux = self.output / "SYSUNetAuth_Rust_linux_x64_v0.7.0-alpha.0.tar.gz"
         self.assertEqual(linux.read_bytes(), self.linux.read_bytes())
         self.assertEqual((self.output / "SHA256SUMS-rust-linux-x64.txt").read_text(), f"{hashlib.sha256(linux.read_bytes()).hexdigest()}  {linux.name}\n")
@@ -139,8 +139,8 @@ class ReleaseAssetsTests(unittest.TestCase):
             path.unlink()
         result = assets.prepare(self.metadata, self.linux, self.output,
                                 macos_inputs={}, platforms=self.required_platforms())
-        self.assertEqual(len(result), 14)
-        self.assertEqual(sum(path.suffix == ".exe" for path in result), 4)
+        self.assertEqual(len(result), 11)
+        self.assertEqual(sum(path.suffix == ".exe" for path in result), 3)
         self.assertTrue(any("linux_x64" in path.name for path in result))
         self.assertFalse(any("macos" in path.name for path in result))
 
@@ -182,7 +182,7 @@ class ReleaseAssetsTests(unittest.TestCase):
         command = [sys.executable, str(ROOT / "scripts/prepare_release_assets.py"), "--metadata", str(self.metadata)]
         required = subprocess.run(command + ["--tier", "1", "--tier", "2", "--linux-input", str(self.linux),
                                              "--output-dir", str(self.output)], capture_output=True, text=True, check=True)
-        self.assertEqual(len(required.stdout.splitlines()), 14)
+        self.assertEqual(len(required.stdout.splitlines()), 11)
         advisory = subprocess.run(command + ["--tier", "3", "--macos-arch", "arm64",
                                              "--macos-arm64-input", str(self.macos["arm64"]),
                                              "--output-dir", str(self.root / "advisory-cli")],

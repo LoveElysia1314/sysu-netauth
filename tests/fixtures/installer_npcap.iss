@@ -12,7 +12,7 @@ OutputBaseFilename=installer-npcap-check-{#MyAppArch}
 
 [Code]
 #define NpcapUrl "https://npcap.com/#download"
-#include "../../apps/rust/scripts/npcap.iss"
+#include "../../scripts/npcap.iss"
 
 procedure CheckLibrary(Name: String; Expected: Boolean);
 begin
