@@ -1,23 +1,55 @@
-# Repository layout and version switching
+# 程序架构
 
-| Directory | Contents |
+`netauth` 库供 CLI、后台服务和 Windows GUI 共用。后台服务独占认证会话；GUI 和 CLI 通过本地 IPC 读取状态、修改配置和发送操作请求。直接认证也获取同一实例锁，避免与后台服务同时操作网卡。
+
+## 认证引擎
+
+`Engine` 管理配置、网卡候选、认证状态和重试期限。主线程等待有界事件队列或定时期限，界面事件通过本地 IPC 传递。每个选中的网卡在认证、联网验证和续期期间共用一个抓包会话。
+
+开机、普通断线和唤醒共用一套重试调度，失败间隔逐步增长至配置上限。当前服务运行期间，手动断开独立于网卡、电源状态，只有主动连接才会清除。Windows 选卡使用系统设备 ID，Linux/macOS 使用 MAC 地址；名称用于展示和 CLI 临时指定接口，手动配置保存设备 ID。
+
+| 平台 | 抓包与通知 |
 | --- | --- |
-| `apps/rust/` | Rust application, tests, resources and build scripts |
-| `apps/python/` | Python application, tests, resources and build scripts |
-| `scripts/`, `tests/` | Shared release tooling and tests |
-| `updates/` | Published update feed; keep its URL stable |
+| Windows | 使用系统自带 NDISUIO 驱动，以可取消的异步 I/O 收发 EAPOL；通过 IP Helper 接收网络通知 |
+| Linux | 绑定 EtherType 的 AF_PACKET 套接字和 rtnetlink 通知 |
+| macOS | BPF 抓包、SystemConfiguration 网络通知和 IOKit 电源通知 |
 
-Run Cargo commands from the repository root and Python application commands from `apps/python`. The root `start.bat` launches Rust; `apps/python/start.bat` launches Python. Build outputs are under each application's `dist/` directory.
+凭据使用 GBK 编码，协议为 EAP-MD5。引擎校验帧长、目的地址和认证端 MAC；配置变化、网卡切换及停止操作递增会话代次，使旧回调失效。
 
-## Switching on Windows
+收到 EAP-Success 后，抓包继续运行，立即探测 `119.29.29.29` 和 `114.114.114.114`，失败后有限次等待重试。探测沿系统路由发送，成功可能来自其他网络接口。验证失败后先尝试剩余候选网卡，再进入重试调度。服务和 CLI 直接认证共用握手判断与可取消的联网探测。
 
-Both installers use the `SYSUNetAuth` service and `%ProgramData%\SYSUNetAuth` settings directory. Install one version at a time and use its matching GUI and service.
+原生网络通知负责及时唤醒引擎，五秒一次的核对补足通知遗漏。状态快照包含活动网卡和完整网卡列表；网卡列表变化时也会推送快照，GUI 按设备 ID 保留用户尚未保存的选择。
 
-1. Back up `%ProgramData%\SYSUNetAuth`; it contains credentials.
-2. Run the selected version's installer.
+Windows 服务通过 SCM 接收电源事件，唤醒后重新打开抓包并认证。具体流程见[睡眠恢复](RESUME.md)。
 
-See [Windows installation and maintenance](WINDOWS.md) for requirements and troubleshooting.
+## 本地控制
 
-Rust saves the Python configuration as `config.json.python-backup` on first migration. To restore it when returning to Python, stop the GUI and service first, then restore the intended backup; its credentials and settings may be older.
+| 平台 | 端点 | 访问权限 |
+| --- | --- | --- |
+| Windows | `\\.\pipe\SYSUNetAuth-v1` | 本机 SYSTEM / Administrators |
+| Linux | `/run/sysu-netauth/control.sock` | root |
+| macOS | `/var/run/sysu-netauth/control.sock` | root |
 
-The [sleep/hibernate recovery fix](../apps/rust/docs/RESUME.md) is available in Rust only.
+消息由四字节大端长度和 UTF-8 JSON 组成，上限为 65,536 字节。请求包含 `version: 1`、`id` 和 `action`；响应包含 `version`、`id`、`ok`、可选的 `error` 以及 `data`。
+
+操作包括 `status`、`watch`、`interfaces`、`authenticate`、`connect`、`logoff`、`get_config`、`set_config`、`reload_config`、`preferences`、`set_preferences`、`diagnostics` 和 `check_update`。`connect` 保存配置并启动一次认证，供 GUI 的“认证／重新认证”使用。每个连接处理一次请求，`watch` 在首次响应后持续推送快照。最多同时处理 16 个客户端，每个订阅者最多缓存八条快照；处理过慢的订阅者会断开。
+
+## 正式版更新
+
+服务并行读取 GitHub 和 Gitee 的更新清单，校验格式、正式版版本号、HTTPS 来源和发布链接，再选择版本较新的结果。已缓存的较新发布信息可抵御镜像暂时落后；启动时重新按当前程序版本计算更新状态，避免升级后继续显示旧提示。
+
+更新检查独立于认证状态，下载线程不阻塞认证引擎。检查频率、手动检查间隔和失败退避见[更新规则](CLI.md#更新规则)。
+
+更新下载逐跳校验 HTTPS 域名，最多跟随 3 次跳转。Gitee 清单允许跳转到其静态资源域名 `raw.giteeusercontent.com`；其他主机和 HTTP 降级被拒绝。自动检查与更新通知分别受配置控制，手动检查始终可用；更新偏好变化不重启认证。
+
+## 存储与目录
+
+配置、缓存和日志由服务管理。配置写入采用原子替换；普通读取只校验内容，不回写文件。Windows 数据目录仅 SYSTEM 和管理员可访问；Linux/macOS 私有目录使用 0700 权限，配置文件使用 0600 权限。
+
+| 目录 | 内容 |
+| --- | --- |
+| `src/` | 认证引擎、平台实现、IPC、界面及命令入口 |
+| `assets/`、`packaging/` | 图标、可执行文件清单和系统服务定义 |
+| `scripts/` | 构建、安装、发布与测量工具 |
+| `tests/` | Rust 网络/服务集成测试与发行工具测试 |
+| `docs/` | 安装、开发及维护文档 |

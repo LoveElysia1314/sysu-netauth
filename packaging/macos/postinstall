@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+[ "${3:-/}" = / ] || exit 1
+resources=/Applications/SYSUNetAuth.app/Contents/Resources
+/usr/bin/codesign --verify --strict /Applications/SYSUNetAuth.app
+uid=$(/usr/bin/stat -f %u /dev/console)
+case "$uid" in
+    ''|0|*[!0-9]*) /bin/sh "$resources/install-macos.sh" ;;
+    *) /bin/sh "$resources/install-macos.sh" "$uid" ;;
+esac
+
+# Validate the same XPC path the GUI uses, under the bound user's UID.
+# A root CLI status check cannot detect UID or code-signature policy mismatches.
+major=$(/usr/bin/sw_vers -productVersion | /usr/bin/cut -d . -f 1)
+if [ "$major" -ge 13 ] && [ "$uid" -gt 0 ]; then
+    remaining=10
+    until /usr/bin/sudo -u "#$uid" -- /Applications/SYSUNetAuth.app/Contents/MacOS/SYSUNetAuth --check-helper; do
+        remaining=$((remaining - 1))
+        [ "$remaining" -gt 0 ] || { echo 'Installed helper failed GUI authorization verification.' >&2; exit 1; }
+        sleep 1
+    done
+fi

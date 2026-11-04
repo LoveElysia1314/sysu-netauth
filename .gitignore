@@ -21,6 +21,8 @@ private/
 # Build artifacts
 /.cache/
 target/
+macos/.build/
+macos/.swiftpm/
 build/
 dist/
 *.egg-info/
@@ -39,8 +41,5 @@ Thumbs.db
 .DS_Store
 sysu_netauth.spec
 
-# Generated Python installer scripts and intermediate compiler output
-apps/python/scripts/setup.iss
-apps/python/scripts/Output/
 .pytest_cache/
-apps/python/sysu_netauth/_version.py
+.ruff_cache/

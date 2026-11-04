@@ -1,0 +1,32 @@
+name: macOS GUI offline tests
+on:
+  push:
+    paths: ['macos/**', 'assets/icons/**', 'scripts/generate-icons.py', 'tests/test_icon_assets.py', 'packaging/windows.rc', 'scripts/setup.template.iss', 'scripts/*macos*.sh', 'packaging/macos/**', 'packaging/*gui-helper.plist', 'packaging/*notifications.plist', '.github/workflows/macos-gui.yml']
+  pull_request:
+    paths: ['macos/**', 'assets/icons/**', 'scripts/generate-icons.py', 'tests/test_icon_assets.py', 'packaging/windows.rc', 'scripts/setup.template.iss', 'scripts/*macos*.sh', 'packaging/macos/**', 'packaging/*gui-helper.plist', 'packaging/*notifications.plist', '.github/workflows/macos-gui.yml']
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: python3 scripts/generate-icons.py --check
+      - run: python3 -m unittest discover -s tests -p test_icon_assets.py
+      - run: swift test --package-path macos
+      - run: sh scripts/test-macos-gui-offline.sh
+      - run: sh scripts/build-macos-gui.sh
+      - name: Render native light and dark previews with offline data
+        run: |
+          chmod +x macos/OfflineChecks/mock-cli.py
+          for style in light dark; do
+            for state in latest available; do
+              NETAUTH_CLI="$PWD/macos/OfflineChecks/mock-cli.py" NETAUTH_PREVIEW_UPDATE_STATE="$state" NETAUTH_PREVIEW_STYLE="$style" NETAUTH_PREVIEW_DIR="$PWD/dist/gui-preview/$state" dist/SYSUNetAuth.app/Contents/MacOS/SYSUNetAuth
+            done
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-gui-preview
+          path: dist/gui-preview/**/*.png
+          if-no-files-found: error

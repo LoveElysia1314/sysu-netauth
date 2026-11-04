@@ -1,4 +1,4 @@
-name: Tier 3 macOS build and test
+name: macOS build and test
 on:
   workflow_call:
     inputs:
@@ -7,14 +7,11 @@ on:
         default: ''
 permissions:
   contents: read
-env:
-  PIP_CACHE_DIR: ${{ github.workspace }}/.cache/pip-build
 jobs:
   macos:
-    name: Tier 3 / macOS ${{ matrix.arch }} (advisory)
+    name: Tier 2 / macOS ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -36,10 +33,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-          cache: pip
-          cache-dependency-path: requirements-build.txt
-      - if: inputs.release_tag != ''
-        run: python3 -m pip install -r requirements-build.txt
       - if: inputs.release_tag != ''
         run: python3 scripts/release_version.py --write
       - uses: dtolnay/rust-toolchain@stable
@@ -55,27 +48,30 @@ jobs:
       - run: cargo test --locked --target ${{ matrix.target }} --workspace
       - name: Check SDK ABI
         run: clang -std=c11 -Wno-deprecated-declarations -Werror tests/fixtures/macos_abi.c -o "$RUNNER_TEMP/macos-abi"
+      - name: Test native GUI and helper contracts
+        run: |
+          swift test --package-path macos
+          sh scripts/test-macos-gui-offline.sh
       - name: Test daemon IPC, shutdown and BPF cancellation
         env:
           CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: sudo -n --
           CARGO_TARGET_X86_64_APPLE_DARWIN_RUNNER: sudo -n --
         run: cargo test --locked --target ${{ matrix.target }} --test macos_service -- --ignored --nocapture --test-threads=1
-      - run: sh apps/rust/scripts/build-macos.sh ${{ matrix.target }}
+      - run: sh scripts/build-macos.sh ${{ matrix.target }}
       - name: Verify release CLI version
         if: inputs.release_tag != ''
         env:
           MACOS_ARCH: ${{ matrix.arch }}
         run: |
-          actual=$("apps/rust/dist/sysu-netauth-macos-$MACOS_ARCH/sysu_netauth" --version)
+          actual=$("dist/SYSUNetAuth.app/Contents/Resources/sysu_netauth" --version)
           test "$actual" = "sysu-netauth ${NETAUTH_RELEASE_TAG#v}"
       - name: Test launchd install, upgrade and removal
-        run: sh apps/rust/scripts/test-launchd.sh apps/rust/dist/sysu-netauth-macos-${{ matrix.arch }}
+        run: sh scripts/test-macos-package.sh dist/sysu-netauth-macos-${{ matrix.arch }}.pkg
       - uses: actions/upload-artifact@v4
         with:
-          name: sysu-netauth-Rust-macOS-${{ matrix.arch }}
-          path: apps/rust/dist/sysu-netauth-macos-${{ matrix.arch }}.tar.gz
+          name: sysu-netauth-macos-${{ matrix.arch }}
+          path: |
+            dist/sysu-netauth-macos-${{ matrix.arch }}.pkg
+            dist/sysu-netauth-macos-${{ matrix.arch }}.pkg.metadata.json
           if-no-files-found: error
           overwrite: true
-      - name: Report advisory failure
-        if: failure()
-        run: echo '::warning::Tier 3 macOS checks failed; Tier 1 and Tier 2 remain required.'

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "version": "0.6.3",
-  "published_at": "2026-11-01T00:00:00+08:00",
-  "release_url": "https://github.com/LoveElysia1314/sysu-netauth/releases/tag/v0.6.3",
-  "summary": "修复状态文件短暂读取失败后重复弹出连接成功通知的问题，保留真实断线重连时的通知。",
+  "version": "0.7.0",
+  "published_at": "2026-11-04T13:58:48+08:00",
+  "release_url": "https://github.com/LoveElysia1314/sysu-netauth/releases/tag/v0.7.0",
+  "summary": "新增 macOS 和 Linux 支持，Windows 采用系统有线驱动，提供独立通知、正式版更新提醒及运行日志。",
   "channel": "stable"
 }

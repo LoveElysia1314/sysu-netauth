@@ -25,6 +25,7 @@ _Static_assert(CURLOPT_PROTOCOLS == 181 && CURL_GLOBAL_DEFAULT == 3, "curl initi
 _Static_assert(CURLOPT_SSL_VERIFYPEER == 64 && CURLOPT_SSL_VERIFYHOST == 81, "curl TLS options changed");
 _Static_assert(CURLOPT_TIMEOUT_MS == 155 && CURLOPT_CONNECTTIMEOUT_MS == 156, "curl timeouts changed");
 _Static_assert(CURLINFO_RESPONSE_CODE == 0x200002 && CURLPROTO_HTTPS == 2, "curl protocol values changed");
+_Static_assert(CURLINFO_REDIRECT_URL == 0x10001f, "curl redirect info changed");
 _Static_assert(kIOMessageCanSystemSleep == 0xe0000270 && kIOMessageSystemWillSleep == 0xe0000280 &&
                kIOMessageSystemHasPoweredOn == 0xe0000300, "power notification values changed");
 int main(void) { return 0; }

@@ -3,7 +3,7 @@
 import importlib.util
 import json
 import os
-import runpy
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -18,15 +18,24 @@ versioning = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(versioning)
 
 
+def set_package_version(root, version):
+    manifest = root / "Cargo.toml"
+    contents, count = re.subn(r'(?m)^version = "[^"]+"$', f'version = "{version}"',
+                              manifest.read_text(encoding="utf-8"), count=1)
+    assert count == 1
+    manifest.write_text(contents, encoding="utf-8")
+
+
 class ReleaseVersionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="netauth version ")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        for relative in ("apps/rust/Cargo.toml", "Cargo.lock", "apps/python/pyproject.toml", "apps/python/sysu_netauth/core/config.py", "apps/python/updates/release.json", "updates/release.json"):
+        for relative in ("Cargo.toml", "Cargo.lock", "updates/release.json"):
             target = self.root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / relative, target)
+        set_package_version(self.root, "0.7.0-alpha.0")
         self.git("init", "-q")
         self.git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "fixture")
 
@@ -34,10 +43,10 @@ class ReleaseVersionTests(unittest.TestCase):
         return subprocess.check_output(["git", "-C", str(self.root), *args], text=True).strip()
 
     def test_stable_and_prerelease_conventions(self):
-        for tag, python in (("v0.7.0", "0.7.0"), ("v0.7.0-alpha.0", "0.7.0a0"), ("v0.7.0-beta.2", "0.7.0b2"), ("v0.7.0-rc.1", "0.7.0rc1")):
+        for tag in ("v0.7.0", "v0.7.0-alpha.0", "v0.7.0-beta.2", "v0.7.0-rc.1"):
             with self.subTest(tag=tag):
                 info = versioning.tag_version(tag)
-                self.assertEqual(info["python_version"], python)
+                self.assertEqual(info["prerelease"], "-" in tag)
                 self.assertEqual(info["file_version"], "0.7.0")
                 self.assertEqual(info["version"], tag[1:])
         for tag in ("v0.7.0a", "v01.7.0", "v0.7.0-alpha", "v0.7.0-rc.01", "v65536.0.0", "main", "v0.7.0;echo nope"):
@@ -58,7 +67,14 @@ class ReleaseVersionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exactly one"):
                 versioning.resolve(self.root)
 
-    def test_standard_scm_generation_does_not_rewrite_tracked_versions(self):
+    def test_release_tag_must_match_the_compiled_package_version(self):
+        self.git("tag", "v0.7.0-beta.2")
+        with self.assertRaisesRegex(ValueError, "Cargo.toml"):
+            versioning.resolve(self.root, "v0.7.0-beta.2")
+        set_package_version(self.root, "0.7.0-beta.2")
+        self.assertEqual(versioning.resolve(self.root, "v0.7.0-beta.2")["version"], "0.7.0-beta.2")
+
+    def test_metadata_generation_does_not_rewrite_tracked_versions(self):
         self.git("tag", "v0.7.0-alpha.0")
         info = versioning.resolve(self.root, "v0.7.0-alpha.0")
         public_feed = (self.root / "updates/release.json").read_bytes()
@@ -68,7 +84,6 @@ class ReleaseVersionTests(unittest.TestCase):
         lock = tomllib.loads((self.root / "Cargo.lock").read_text(encoding="utf-8"))["package"]
         self.assertEqual([p for p in lock if p["name"] != "sysu-netauth"], [p for p in original_lock if p["name"] != "sysu-netauth"])
         self.assertEqual(lock, original_lock)
-        self.assertEqual(runpy.run_path(str(self.root / "apps/python/sysu_netauth/_version.py"))["__version__"], "0.7.0a0")
         self.assertEqual((self.root / "updates/release.json").read_bytes(), public_feed)
         self.assertEqual(json.loads((self.root / "build/release-version.json").read_text()), info)
 
