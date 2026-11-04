@@ -25,7 +25,7 @@ class ReleaseAssetsTests(unittest.TestCase):
         self.metadata.write_text(json.dumps(self.info),encoding="utf-8")
         self.output = self.root / "output"
         self.output.mkdir()
-        for label in ("Rust_msvc_x64", "Rust_msvc_arm64"):
+        for label in ("windows_x64", "windows_arm64"):
             name=f"SYSUNetAuth_{label}_Setup_v{self.info['version']}.exe"
             path=self.output/name
             path.write_bytes(b"MZ fixture "+name.encode())
@@ -61,12 +61,12 @@ class ReleaseAssetsTests(unittest.TestCase):
         self.assertEqual(sum(p.suffix=='.pkg' for p in result),2)
         self.assertFalse(any('Portable' in p.name or p.suffix=='.zip' for p in result))
         for arch,path in self.macos.items():
-            published=self.output/f"SYSUNetAuth_Rust_macos_{arch}_v{self.info['version']}.pkg"
+            published=self.output/f"SYSUNetAuth_macos_{arch}_v{self.info['version']}.pkg"
             self.assertEqual(published.read_bytes(),path.read_bytes())
 
     def test_missing_windows_arm64_blocks_release(self):
         for path in self.output.glob('*arm64*'): path.unlink()
-        with self.assertRaisesRegex(ValueError,'missing=.*msvc_arm64'): self.prepare()
+        with self.assertRaisesRegex(ValueError,'missing=.*windows_arm64'): self.prepare()
 
     def test_portable_and_gnu_installers_are_rejected(self):
         for name in ('SYSUNetAuth_Portable.zip','SYSUNetAuth_Rust_gnu_x64_Setup.exe'):
@@ -86,15 +86,13 @@ class ReleaseAssetsTests(unittest.TestCase):
         self.write_linux(self.info,omit='install-linux.sh')
         with self.assertRaises(KeyError): self.prepare()
 
-    def test_required_release_does_not_depend_on_macos(self):
+    def test_missing_macos_blocks_release(self):
         for path in self.macos.values(): path.unlink()
-        result=self.prepare(platforms=self.required())
-        self.assertEqual(len(result),6)
-        self.assertFalse(any('macos' in p.name for p in result))
+        with self.assertRaises(FileNotFoundError): self.prepare()
 
-    def test_advisory_architectures_publish_independently(self):
+    def test_architecture_specific_collection_keeps_matching_checksums(self):
         for arch in self.macos:
-            result=self.prepare(platforms={f'rust-macos-{arch}'},output=self.root/f'advisory-{arch}')
+            result=self.prepare(platforms={f'macos-{arch}'},output=self.root/f'macos-{arch}')
             self.assertEqual({p.suffix for p in result},{'.pkg','.txt'})
 
     def test_macos_metadata_architecture_and_commit_are_verified(self):
@@ -114,11 +112,12 @@ class ReleaseAssetsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Missing macOS installer metadata'):
             assets.prepare(self.metadata,self.linux,self.output,macos_inputs=self.macos)
 
-    def test_cli_can_publish_one_macos_architecture(self):
-        command=[sys.executable,str(ROOT/'scripts/prepare_release_assets.py'),'--metadata',str(self.metadata),'--tier','3','--macos-arch','arm64','--macos-arm64-input',str(self.macos['arm64']),'--macos-arm64-metadata',str(self.provenance['arm64']),'--output-dir',str(self.root/'cli-output')]
+    def test_cli_requires_complete_five_platform_release(self):
+        command=[sys.executable,str(ROOT/'scripts/prepare_release_assets.py'),'--metadata',str(self.metadata),'--linux-input',str(self.linux),'--output-dir',str(self.output)]
+        for arch in self.macos:
+            command += [f'--macos-{arch}-input',str(self.macos[arch]),f'--macos-{arch}-metadata',str(self.provenance[arch])]
         result=subprocess.run(command,check=True,capture_output=True,text=True)
-        self.assertEqual(len(result.stdout.splitlines()),2)
-        self.assertNotIn('macos_x64',result.stdout)
+        self.assertEqual(len(result.stdout.splitlines()),10)
 
     def test_empty_or_unknown_platform_selection_is_rejected(self):
         for platforms in (set(),{'unknown'}):

@@ -1,6 +1,6 @@
 # SYSU NetAuth
 
-中山大学有线校园网 802.1X / EAP-MD5 自动认证客户端，使用 Rust 实现。Windows 提供原生图形界面、命令行和后台服务；macOS 提供 AppKit 界面、命令行和 launchd 服务，Linux 提供命令行和 systemd 服务。
+中山大学有线校园网 802.1X / EAP-MD5 自动认证客户端。Windows 提供 Win32 原生界面，macOS 提供 AppKit 原生界面，两端均不依赖 Qt；Linux 提供命令行。各平台通过独立后台服务保持认证。
 
 当前版本为 **v0.7.0-beta.3**。程序内只检查正式版更新，测试版请从[发布页](https://github.com/LoveElysia1314/sysu-netauth/releases/tag/v0.7.0-beta.3)下载。
 
@@ -8,20 +8,20 @@
 
 | 平台 | 下载文件标识 | 使用方式 |
 | --- | --- | --- |
-| Windows 10/11 x64 | `Rust_msvc_x64` | 原生界面、命令行、后台服务 |
-| Windows 10/11 ARM64 | `Rust_msvc_arm64` | 原生界面、命令行、后台服务 |
-| Linux x64 | `Rust_linux_x64` | 命令行、systemd 服务 |
-| macOS 11+ Apple Silicon / Intel | `Rust_macos_arm64` / `Rust_macos_x64` | PKG 安装包，含原生界面、菜单栏和后台服务 |
+| Windows 10/11 x64 | `windows_x64` | 原生界面、命令行、后台服务 |
+| Windows 10/11 ARM64 | `windows_arm64` | 原生界面、命令行、后台服务 |
+| Linux x64 | `linux_x64` | 命令行、systemd 服务 |
+| macOS 11+ Apple Silicon / Intel | `macos_arm64` / `macos_x64` | PKG 安装包，含原生界面、菜单栏和后台服务 |
 
-Windows 下载对应架构的 `Setup.exe`，macOS 下载 `.pkg` 安装包。Windows 使用系统自带的原生网卡接口，无需安装 Npcap；安装后填写 NetID 和密码，点击“重新连接”。后台服务独立运行，退出界面后仍可自动认证。
+Windows 下载对应架构的 `Setup.exe`，macOS 下载 `.pkg` 安装包。安装后填写 NetID 和密码，点击“重新连接”。后台服务独立运行，退出界面后仍可自动认证。
 
-每个平台提供 SHA-256 校验文件。Linux 压缩包包含需要 root 权限执行的系统服务安装脚本。公开发行不提供便携版或重复的 Windows 编译器变体。
+每个平台提供 SHA-256 校验文件。Linux 压缩包包含需要 root 权限执行的系统服务安装脚本。
 
 - [Windows 安装与排障](docs/WINDOWS.md)
 - [Linux 安装与服务管理](docs/LINUX.md)
 - [macOS 安装与服务管理](docs/MACOS.md)
 
-macOS 的构建、签名和授权说明见[原生界面开发文档](macos/README.md)。当前仍为测试版，macOS 校园网实连和电源恢复需要进一步验证。
+macOS 的构建、签名和授权说明见[原生界面开发文档](macos/README.md)。各平台的测试方法与设备验证范围见[测试文档](docs/VALIDATION.md)。
 
 ## 功能
 

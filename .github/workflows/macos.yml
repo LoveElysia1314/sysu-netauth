@@ -1,4 +1,4 @@
-name: Tier 3 macOS build and test
+name: macOS build and test
 on:
   workflow_call:
     inputs:
@@ -9,10 +9,9 @@ permissions:
   contents: read
 jobs:
   macos:
-    name: Tier 3 / macOS ${{ matrix.arch }} (advisory)
+    name: Tier 2 / macOS ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -70,12 +69,9 @@ jobs:
         run: sh scripts/test-macos-package.sh dist/sysu-netauth-macos-${{ matrix.arch }}.pkg
       - uses: actions/upload-artifact@v4
         with:
-          name: sysu-netauth-Rust-macOS-${{ matrix.arch }}
+          name: sysu-netauth-macos-${{ matrix.arch }}
           path: |
             dist/sysu-netauth-macos-${{ matrix.arch }}.pkg
             dist/sysu-netauth-macos-${{ matrix.arch }}.pkg.metadata.json
           if-no-files-found: error
           overwrite: true
-      - name: Report advisory failure
-        if: failure()
-        run: echo '::warning::Tier 3 macOS checks failed; Tier 1 and Tier 2 remain required.'

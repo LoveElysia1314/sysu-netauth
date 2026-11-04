@@ -1,6 +1,6 @@
 # macOS
 
-macOS 11+，支持 Apple Silicon 与 Intel，提供原生界面、菜单栏、CLI 和 launchd 后台服务。需要有线以太网。当前为测试版，校园网认证和睡眠恢复仍需实机验证。
+macOS 11+，支持 Apple Silicon 与 Intel，提供原生界面、菜单栏、CLI 和 launchd 后台服务。需要有线以太网。
 
 ## 安装与配置
 
@@ -25,7 +25,7 @@ sudo sysu_netauth status --json
 sudo sysu_netauth watch --json
 ```
 
-手动选卡可设置 `"iface_mode":"manual","iface":"00:11:22:33:44:55"`。这里的 MAC 地址仅为示例，请先运行 `sysu_netauth interfaces --json`，将所选网卡的 `id` 原样填入 `iface`，不要填写 `en5` 等网卡名称。旧配置若使用名称，需要重新选择网卡并保存。其他命令见 [命令行与配置](CLI.md)。
+手动选卡可设置 `"iface_mode":"manual","iface":"00:11:22:33:44:55"`。这里的 MAC 地址仅为示例，请先运行 `sysu_netauth interfaces --json`，将所选网卡的 `id` 原样填入 `iface`，不要填写 `en5` 等网卡名称。其他命令见 [命令行与配置](CLI.md)。
 
 配置与日志位于 `/Library/Application Support/SYSUNetAuth/`，其中 `config.json` 包含凭据。连接问题查看 `service.log`，启动问题查看 `service_bootstrap.log`。请避免在同一网卡上同时运行其他 802.1X 客户端。
 

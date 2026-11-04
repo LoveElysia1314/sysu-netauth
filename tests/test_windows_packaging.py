@@ -15,7 +15,6 @@ from unittest.mock import patch
 from test_release_version import versioning, set_package_version
 
 ROOT = Path(__file__).resolve().parent.parent
-RUST_VERSION = "1.2.3"
 SPEC = importlib.util.spec_from_file_location("package_windows", ROOT / "scripts/package_windows.py")
 packaging = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(packaging)
@@ -78,15 +77,12 @@ class WindowsPackagingTests(unittest.TestCase):
         (output / f"{name}.exe").write_bytes(b"MZ compiled setup fixture")
         return subprocess.CompletedProcess(command, 0)
 
-    def test_windows_variants_emit_only_installers_and_checksums(self):
-        self.output.mkdir()
-        for label in ("Rust_msvc_x64", "Rust_gnu_x64"):
-            (self.output / f"SYSUNetAuth_{label}_Portable_v1.2.3.zip").write_bytes(b"obsolete portable")
-        with patch.object(packaging.subprocess, "run", side_effect=self.compile) as compiler:
-            variants = [packaging.package(self.source, self.output, Path("ISCC.exe")),
-                        packaging.package(self.source, self.output, Path("ISCC.exe"), abi="gnu")]
-        self.assertEqual(compiler.call_count, 2)
-        for setup, checksums in variants:
+    def test_windows_architectures_emit_only_installers_and_checksums(self):
+        for arch in ("x64", "arm64"):
+            self.write_binaries(arch)
+            with patch.object(packaging.subprocess, "run", side_effect=self.compile):
+                setup, checksums = packaging.package(self.source, self.output, Path("ISCC.exe"), arch=arch)
+            self.assertEqual(setup.name, f"SYSUNetAuth_windows_{arch}_Setup_v1.2.3.exe")
             self.assertEqual(len(checksums.read_text().splitlines()), 1)
             digest, name = checksums.read_text().strip().split("  ")
             self.assertEqual(name, setup.name)
@@ -101,10 +97,8 @@ class WindowsPackagingTests(unittest.TestCase):
         versioning.stamp(self.root, info)
         (self.source / "release-version.json").write_text(json.dumps(info), encoding="utf-8")
         with patch.object(packaging.subprocess, "run", side_effect=self.compile):
-            rust = packaging.package(self.source, self.output, Path("ISCC.exe"))
-            gnu = packaging.package(self.source, self.output, Path("ISCC.exe"), abi="gnu")
-        self.assertIn("_v0.7.0-alpha.0.exe", rust[0].name)
-        self.assertIn("_v0.7.0-alpha.0.exe", gnu[0].name)
+            installer = packaging.package(self.source, self.output, Path("ISCC.exe"))
+        self.assertIn("_v0.7.0-alpha.0.exe", installer[0].name)
         (self.source / "release-version.json").write_text(json.dumps(info | {"commit": "another-commit"}), encoding="utf-8")
         with patch.object(packaging.subprocess, "run") as compile_setup:
             with self.assertRaisesRegex(ValueError, "does not match"):
@@ -120,16 +114,14 @@ class WindowsPackagingTests(unittest.TestCase):
 
     def test_compiler_failure_cannot_reuse_stale_installer(self):
         self.output.mkdir()
-        for abi, label, version in (
-            ("msvc", "Rust_msvc_x64", RUST_VERSION),
-            ("gnu", "Rust_gnu_x64", RUST_VERSION),
-        ):
-            with self.subTest(abi=abi):
-                stale = self.output / f"SYSUNetAuth_{label}_Setup_v{version}.exe"
+        for arch in ("x64", "arm64"):
+            self.write_binaries(arch)
+            with self.subTest(arch=arch):
+                stale = self.output / f"SYSUNetAuth_windows_{arch}_Setup_v1.2.3.exe"
                 stale.write_bytes(b"stale setup")
                 with patch.object(packaging.subprocess, "run", side_effect=subprocess.CalledProcessError(2, "ISCC.exe")):
                     with self.assertRaises(subprocess.CalledProcessError):
-                        packaging.package(self.source, self.output, Path("ISCC.exe"), abi=abi)
+                        packaging.package(self.source, self.output, Path("ISCC.exe"), arch=arch)
                 self.assertFalse(stale.exists())
 
     def test_success_exit_without_installer_is_rejected(self):
@@ -141,9 +133,9 @@ class WindowsPackagingTests(unittest.TestCase):
         self.write_binaries("arm64")
         with patch.object(packaging.subprocess, "run", side_effect=self.compile) as compiler:
             setup, checksums = packaging.package(self.source, self.output, Path("ISCC.exe"), arch="arm64")
-        self.assertEqual(setup.name, "SYSUNetAuth_Rust_msvc_arm64_Setup_v1.2.3.exe")
+        self.assertEqual(setup.name, "SYSUNetAuth_windows_arm64_Setup_v1.2.3.exe")
         self.assertIn("/DMyAppArch=arm64", compiler.call_args.args[0])
-        self.assertEqual(checksums.name, "SHA256SUMS-rust-msvc-arm64.txt")
+        self.assertEqual(checksums.name, "SHA256SUMS-windows-arm64.txt")
         self.assertEqual(len(checksums.read_text().splitlines()), 1)
         self.assertFalse(list(self.output.glob("*.zip")))
 
@@ -158,16 +150,10 @@ class WindowsPackagingTests(unittest.TestCase):
                 packaging.package(self.source, self.output, Path("ISCC.exe"), arch="arm64")
             compiler.assert_not_called()
 
-    def test_unsupported_arm64_abi_is_rejected(self):
+    def test_unsupported_architecture_is_rejected_before_compilation(self):
         with patch.object(packaging.subprocess, "run") as compiler:
-            with self.assertRaisesRegex(ValueError, "ARM64 requires"):
-                packaging.package(self.source, self.output, Path("ISCC.exe"), abi="gnu", arch="arm64")
-            compiler.assert_not_called()
-
-    def test_invalid_abi_is_rejected_before_compilation(self):
-        with patch.object(packaging.subprocess, "run") as compiler:
-            with self.assertRaisesRegex(ValueError, "Unsupported Rust ABI"):
-                packaging.package(self.source, self.output, Path("ISCC.exe"), abi="unknown")
+            with self.assertRaisesRegex(ValueError, "Unsupported Windows architecture"):
+                packaging.package(self.source, self.output, Path("ISCC.exe"), arch="x86")
             compiler.assert_not_called()
 
 

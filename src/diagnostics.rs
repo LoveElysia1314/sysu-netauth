@@ -64,11 +64,18 @@ pub fn read_log(paths: &Paths, config: &crate::config::Config) -> std::io::Resul
     log.retain(|c| !c.is_control() || c == '\n' || c == '\t');
     // JSON escaping can double the length; retain space within the 64 KiB IPC frame.
     if log.len() > 28 * 1024 {
-        let mut end = 28 * 1024;
-        while !log.is_char_boundary(end) {
-            end -= 1;
+        let mut start = log.len() - 28 * 1024;
+        while !log.is_char_boundary(start) {
+            start += 1;
         }
-        log.truncate(end);
+        // Drop old records, keeping the most recent text even after redaction
+        // expands it. Prefer a complete first line when another line follows.
+        if let Some(end) = log[start..].find('\n')
+            && start + end + 1 < log.len()
+        {
+            start += end + 1;
+        }
+        log.drain(..start);
     }
     Ok(log)
 }
@@ -99,6 +106,27 @@ mod tests {
         .unwrap();
         let output = read_log(&paths, &config).unwrap();
         assert_eq!(output, "[redacted] [redacted]\n");
+        for (history, config) in [
+            ("旧记录：互联网连通\n".repeat(2000), config),
+            (
+                "x\n".repeat(16000),
+                crate::config::Config {
+                    password: "x".into(),
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let latest = "1793752947 最新认证成功；互联网连通\n";
+            fs::write(root.join("service.log"), format!("{history}{latest}")).unwrap();
+            let output = read_log(&paths, &config).unwrap();
+            assert!(
+                output.ends_with(latest),
+                "newest record must survive export"
+            );
+            assert!(output.len() <= 28 * 1024);
+            let encoded = serde_json::to_vec(&serde_json::json!({"log": output})).unwrap();
+            assert!(encoded.len() < crate::ipc::MAX_MESSAGE);
+        }
         fs::remove_dir_all(root).unwrap();
     }
 }

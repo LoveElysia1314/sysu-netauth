@@ -4,10 +4,10 @@ Linux x64 提供命令行和 systemd 后台服务，需要 root 权限访问认�
 
 ## 安装与配置
 
-从[发布页](https://github.com/LoveElysia1314/sysu-netauth/releases)下载 `Rust_linux_x64` 压缩包，解压后安装：
+从[发布页](https://github.com/LoveElysia1314/sysu-netauth/releases)下载 `linux_x64` 压缩包，解压后安装：
 
 ```sh
-tar -xzf SYSUNetAuth_Rust_linux_x64_v*.tar.gz
+tar -xzf SYSUNetAuth_linux_x64_v*.tar.gz
 cd sysu-netauth-linux-x64
 sudo sh install-linux.sh
 sysu_netauth interfaces

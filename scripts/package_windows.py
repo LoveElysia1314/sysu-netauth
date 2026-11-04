@@ -50,13 +50,9 @@ def verify_pe_architecture(path: Path, arch: str) -> None:
         raise ValueError(f"Windows executable does not match {arch}: {path}")
 
 
-def package(input_dir: Path, output_dir: Path, compiler: Path, *, abi: str = "msvc", arch: str = "x64") -> list[Path]:
+def package(input_dir: Path, output_dir: Path, compiler: Path, *, arch: str = "x64") -> list[Path]:
     if arch not in {"x64", "arm64"}:
         raise ValueError(f"Unsupported Windows architecture: {arch}")
-    if abi not in {"msvc", "gnu"}:
-        raise ValueError(f"Unsupported Rust ABI: {abi}")
-    if arch == "arm64" and abi != "msvc":
-        raise ValueError("Windows ARM64 requires the MSVC build")
     input_dir = input_dir.resolve(strict=True)
     output_dir = output_dir.resolve()
     required = ["sysu_netauth.exe", "sysu_netauth_service.exe", "sysu_netauth_gui.exe"]
@@ -81,17 +77,15 @@ def package(input_dir: Path, output_dir: Path, compiler: Path, *, abi: str = "ms
     if any(int(part) > 65535 for part in core.split(".")):
         raise ValueError("Windows version components must not exceed 65535")
     script = ROOT / "scripts/setup.template.iss"
-    defines = [f"/DMyAppVersion={version}", f"/DMyAppFileVersion={core}", f"/DMyAppAbi={abi}", f"/DMyAppArch={arch}", f"/DAppSourceDir={input_dir}"]
-    label = f"Rust_{abi}_{arch}"
-    identifier = label.lower().replace("_", "-")
+    defines = [f"/DMyAppVersion={version}", f"/DMyAppFileVersion={core}", f"/DMyAppArch={arch}", f"/DAppSourceDir={input_dir}"]
+    label = f"windows_{arch}"
+    identifier = f"windows-{arch}"
     basename = f"SYSUNetAuth_{label}_Setup_v{version}"
     output_dir.mkdir(parents=True, exist_ok=True)
     setup = output_dir / f"{basename}.exe"
-    obsolete_archive = output_dir / f"{basename}.zip"
-    portable = output_dir / f"SYSUNetAuth_{label}_Portable_v{version}.zip"
     checksums = output_dir / f"SHA256SUMS-{identifier}.txt"
     # A compiler that fails or emits no setup must never reuse stale output.
-    for path in (setup, obsolete_archive, portable, checksums):
+    for path in (setup, checksums):
         path.unlink(missing_ok=True)
     subprocess.run(
         [str(compiler), f"/O{output_dir}", f"/F{basename}", *defines, str(script)],
@@ -110,14 +104,13 @@ def package(input_dir: Path, output_dir: Path, compiler: Path, *, abi: str = "ms
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--abi", choices=("msvc", "gnu"), default="msvc", help="Rust compiler ABI (default: msvc)")
     parser.add_argument("--arch", choices=("x64", "arm64"), default="x64", help="Windows CPU architecture (default: x64)")
     parser.add_argument("--input-dir", required=True, type=Path, help="Directory containing the built EXEs")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist/windows-installers")
     parser.add_argument("--compiler", type=Path, help="Inno Setup compiler (auto-detected by default)")
     args = parser.parse_args()
     compiler = args.compiler.resolve(strict=True) if args.compiler else find_compiler()
-    for path in package(args.input_dir, args.output_dir, compiler, abi=args.abi, arch=args.arch):
+    for path in package(args.input_dir, args.output_dir, compiler, arch=args.arch):
         print(path)
 
 

@@ -26,16 +26,19 @@ jobs:
             platform: Linux AMD64
             arch: x64
             target: x86_64-unknown-linux-gnu
+            artifact: sysu-netauth-linux-x64
           - os: windows-latest
             tier: 1
             platform: Windows AMD64 (MSVC)
             arch: x64
             target: x86_64-pc-windows-msvc
+            artifact: sysu-netauth-windows-x64
           - os: windows-11-arm
             tier: 2
             platform: Windows AARCH64
             arch: arm64
             target: aarch64-pc-windows-msvc
+            artifact: sysu-netauth-windows-arm64
     runs-on: ${{ matrix.os }}
     env:
       NETAUTH_RELEASE_TAG: ${{ inputs.release_tag }}
@@ -91,7 +94,7 @@ jobs:
         run: |
           ./scripts/build.ps1 -Target ${{ matrix.target }}
           if ($LASTEXITCODE -ne 0) { throw 'Windows installer build failed' }
-          $setup = Get-ChildItem dist/SYSUNetAuth_Rust_msvc_x64_Setup_*.exe | Select-Object -ExpandProperty FullName
+          $setup = Get-ChildItem dist/SYSUNetAuth_windows_x64_Setup_*.exe | Select-Object -ExpandProperty FullName
           ./scripts/test-windows-package.ps1 -Setup $setup
       - if: runner.os == 'Windows' && inputs.release_tag != ''
         run: |
@@ -101,7 +104,7 @@ jobs:
         run: sh scripts/build.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: sysu-netauth-Rust-${{ runner.os }}${{ runner.os == 'Windows' && '-msvc' || '' }}${{ matrix.arch == 'arm64' && '-arm64' || '' }}
+          name: ${{ matrix.artifact }}
           path: dist/${{ matrix.arch == 'arm64' && 'arm64/' || '' }}
           if-no-files-found: error
           overwrite: true
@@ -137,12 +140,12 @@ jobs:
         run: cp build/release-version.json dist/gnu/sysu_netauth/
       - uses: actions/upload-artifact@v4
         with:
-          name: sysu-netauth-Rust-Windows-gnu
+          name: sysu-netauth-windows-gnu-x64
           path: dist/gnu/
           if-no-files-found: error
           overwrite: true
   macos:
-    name: Tier 3 / macOS (advisory)
+    name: Tier 2 / macOS
     if: ${{ !inputs.skip_macos }}
     uses: ./.github/workflows/macos.yml
     with:
@@ -210,7 +213,7 @@ jobs:
       - run: sh scripts/build-windows.sh ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
-          name: sysu-netauth-Rust-Windows-msvc-from-Linux-${{ matrix.arch }}
+          name: sysu-netauth-windows-cross-${{ matrix.arch }}
           path: ${{ matrix.directory }}/sysu-netauth-windows-${{ matrix.arch }}.zip
           if-no-files-found: error
           overwrite: true

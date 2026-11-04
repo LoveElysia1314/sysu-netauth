@@ -42,3 +42,4 @@ Thumbs.db
 sysu_netauth.spec
 
 .pytest_cache/
+.ruff_cache/

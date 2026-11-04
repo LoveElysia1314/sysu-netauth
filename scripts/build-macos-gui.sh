@@ -28,7 +28,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>io.github.peterrobot.sysu-netauth.gui.experimental</string>
+<key>CFBundleIdentifier</key><string>io.github.peterrobot.sysu-netauth.gui</string>
 <key>CFBundleName</key><string>SYSU NetAuth</string>
 <key>CFBundleExecutable</key><string>SYSUNetAuth</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>

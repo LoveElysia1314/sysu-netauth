@@ -1,4 +1,4 @@
-; Rust distribution. Build with scripts/build.ps1 from a VS developer shell.
+; Build with scripts/build.ps1 from a VS developer shell.
 #ifndef MyAppVersion
   #error Pass the release version using /DMyAppVersion=version
 #endif
@@ -8,20 +8,14 @@
 #ifndef AppSourceDir
   #define AppSourceDir "..\dist\sysu_netauth"
 #endif
-#ifndef MyAppAbi
-  #define MyAppAbi "msvc"
-#endif
 #ifndef MyAppArch
   #define MyAppArch "x64"
 #endif
 #if MyAppArch != "x64" && MyAppArch != "arm64"
   #error Unsupported MyAppArch
 #endif
-#if MyAppArch == "arm64" && MyAppAbi != "msvc"
-  #error ARM64 requires the MSVC build
-#endif
-  #define MyAppName "SYSU NetAuth"
-  #define MyAppGuid "7E9B2C3A-1D4F-4E8A-9B6C-2F3D0E5A7C1B"
+#define MyAppName "SYSU NetAuth"
+#define MyAppGuid "7E9B2C3A-1D4F-4E8A-9B6C-2F3D0E5A7C1B"
 #define MyAppId "SYSUNetAuth"
 
 [Setup]
@@ -31,7 +25,7 @@ AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher=SYSU NetAuth Contributors
 VersionInfoVersion={#MyAppFileVersion}
-VersionInfoDescription=SYSU 802.1X/EAPOL 认证客户端（Rust）
+VersionInfoDescription=SYSU 802.1X/EAPOL 认证客户端
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 PrivilegesRequired=admin
@@ -44,7 +38,7 @@ ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os
 #endif
 OutputDir=..\dist
-OutputBaseFilename=SYSUNetAuth_Rust_{#MyAppAbi}_{#MyAppArch}_Setup_v{#MyAppVersion}
+OutputBaseFilename=SYSUNetAuth_windows_{#MyAppArch}_Setup_v{#MyAppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 SetupIconFile=..\assets\icons\generated\windows\app.ico
